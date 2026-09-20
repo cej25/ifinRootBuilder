@@ -2,7 +2,6 @@
 
 #include "AnalysisConfig.h"
 
-#include <ROOT/RDataFrame.hxx>
 #include <ROOT/TTreeProcessorMT.hxx>
 #include <RtypesCore.h>
 #include <TChain.h>
@@ -502,7 +501,6 @@ int RawAnalysis::run(const std::vector<std::string>& inputPatterns,
         } else {
             std::cout << "Processing with " << threadCount_
                       << " worker threads.\n";
-            ROOT::EnableImplicitMT(threadCount_);
             ROOT::TTreeProcessorMT processor(chain, threadCount_);
             std::mutex workerMutex;
             std::unordered_map<std::thread::id, RawAnalysis*> workerByThread;
@@ -535,12 +533,8 @@ int RawAnalysis::run(const std::vector<std::string>& inputPatterns,
             for (const auto& worker : workers) {
                 merge(*worker);
             }
-            ROOT::DisableImplicitMT();
         }
     } catch (const std::exception& error) {
-        if (ROOT::IsImplicitMTEnabled()) {
-            ROOT::DisableImplicitMT();
-        }
         std::cerr << "Analysis error: " << error.what() << "\n";
         return 5;
     }
