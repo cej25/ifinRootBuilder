@@ -19,11 +19,12 @@ public:
     IndividualDetectorHistograms& operator=(
         const IndividualDetectorHistograms&) = delete;
 
-    void fill(unsigned short detectorLUT, double energy);
+    void fill(unsigned short detectorID, double energy);
+    void merge(const IndividualDetectorHistograms& other);
     void write(TDirectory& energyDirectory) const;
 
 private:
-    TH1D& spectrumFor(unsigned short detectorLUT);
+    TH1D& spectrumFor(unsigned short detectorID);
 
     const config::DetectorDefinition* definition_;
     std::map<unsigned short, std::unique_ptr<TH1D>> spectra_;

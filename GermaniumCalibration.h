@@ -11,7 +11,7 @@ class GermaniumCalibration {
 public:
     enum class Failure {
         None,
-        MissingLUT,
+        MissingID,
         OutOfRange,
         NonFiniteResult
     };
@@ -28,7 +28,7 @@ public:
 
     bool empty() const;
     std::size_t numberOfStages() const;
-    Result calibrate(UShort_t detectorLUT, double inputEnergy) const;
+    Result calibrate(UShort_t detectorID, double inputEnergy) const;
 
 private:
     struct Piece {

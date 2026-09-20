@@ -10,6 +10,7 @@ public:
     bool record(unsigned int germaniumMultiplicity,
                 unsigned int bgoMultiplicity,
                 bool allBgoHitsMatched);
+    void merge(const FoldStatistics& other);
     void print(std::ostream& output) const;
 
 private:

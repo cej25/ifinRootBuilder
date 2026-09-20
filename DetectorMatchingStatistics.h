@@ -9,17 +9,18 @@ class DetectorMatchingStatistics {
 public:
     struct EventResult {
         unsigned int extraBgoMultiplicity;
-        bool repeatedGermaniumLUT;
+        bool repeatedGermaniumID;
     };
 
     EventResult record(
-        const std::vector<unsigned short>& germaniumLUTs,
-        const std::vector<unsigned short>& bgoLUTs);
+        const std::vector<unsigned short>& germaniumIDs,
+        const std::vector<unsigned short>& bgoIDs);
+    void merge(const DetectorMatchingStatistics& other);
     void print(std::ostream& output) const;
 
 private:
     std::uint64_t events_ = 0;
-    std::uint64_t eventsWithRepeatedGermaniumLUT_ = 0;
+    std::uint64_t eventsWithRepeatedGermaniumID_ = 0;
 };
 
 #endif

@@ -20,6 +20,7 @@ public:
     void fillEvent(const std::vector<double>& gammaEnergies,
                    bool siliconCoincident);
     void setCalibratedEnergyAxes();
+    void merge(const GammaCoincidenceHistograms& other);
     void write(TDirectory& parentDirectory) const;
 
 private:

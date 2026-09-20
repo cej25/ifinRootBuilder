@@ -11,6 +11,7 @@ public:
     void recordSilicon(bool passesTiming, bool passesEnergy);
     void recordEvent(bool hasSiliconCoincidence);
     void recordBgoVetoDecision(bool survivesVeto);
+    void merge(const GateStatistics& other);
 
     void print(std::ostream& output) const;
 

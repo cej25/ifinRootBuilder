@@ -22,10 +22,11 @@ public:
     const char* name() const;
     const char* directoryName() const;
 
-    void fillHit(unsigned short detectorLUT,
+    void fillHit(unsigned short detectorID,
                  double energy,
                  double relativeTimeNs);
     void fillMultiplicity(unsigned int multiplicity);
+    void merge(const DetectorHistograms& other);
     void setCalibratedEnergyAxis();
     TDirectory* write(TDirectory& parentDirectory) const;
 
@@ -34,7 +35,7 @@ private:
     std::unique_ptr<TH1D> energy_;
     std::unique_ptr<TH1D> time_;
     std::unique_ptr<TH1D> multiplicity_;
-    std::unique_ptr<TH1D> lutOccupancy_;
+    std::unique_ptr<TH1D> idOccupancy_;
 };
 
 #endif

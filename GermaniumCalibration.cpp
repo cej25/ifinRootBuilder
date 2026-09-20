@@ -28,16 +28,16 @@ bool prepareDataLine(std::string& line)
     return line.find_first_not_of(" \t\r\n") != std::string::npos;
 }
 
-UShort_t readDetectorLUT(std::istringstream& input,
+UShort_t readDetectorID(std::istringstream& input,
                          const std::string& fileName,
                          std::size_t lineNumber)
 {
-    long long detectorLUT = -1;
-    if (!(input >> detectorLUT) || detectorLUT < 0 ||
-        detectorLUT > std::numeric_limits<UShort_t>::max()) {
-        throw parseError(fileName, lineNumber, "invalid detector LUT");
+    long long detectorID = -1;
+    if (!(input >> detectorID) || detectorID < 0 ||
+        detectorID > std::numeric_limits<UShort_t>::max()) {
+        throw parseError(fileName, lineNumber, "invalid detector ID");
     }
-    return static_cast<UShort_t>(detectorLUT);
+    return static_cast<UShort_t>(detectorID);
 }
 
 std::size_t readPositiveCount(std::istringstream& input,
@@ -92,10 +92,10 @@ bool lineMatchesLayout(const std::string& line,
         return false;
     }
 
-    long long detectorLUT = -1;
+    long long detectorID = -1;
     long long itemCount = 0;
-    if (!(input >> detectorLUT >> itemCount) || detectorLUT < 0 ||
-        detectorLUT > std::numeric_limits<UShort_t>::max() ||
+    if (!(input >> detectorID >> itemCount) || detectorID < 0 ||
+        detectorID > std::numeric_limits<UShort_t>::max() ||
         itemCount <= 0) {
         return false;
     }
@@ -163,15 +163,15 @@ double GermaniumCalibration::evaluatePolynomial(
 }
 
 GermaniumCalibration::Result GermaniumCalibration::calibrate(
-    UShort_t detectorLUT,
+    UShort_t detectorID,
     double inputEnergy) const
 {
     double energy = inputEnergy;
 
     for (const Stage& stage : stages_) {
-        const auto detector = stage.detectors.find(detectorLUT);
+        const auto detector = stage.detectors.find(detectorID);
         if (detector == stage.detectors.end()) {
-            return {energy, Failure::MissingLUT};
+            return {energy, Failure::MissingID};
         }
 
         const DetectorCalibration& calibration = detector->second;
@@ -226,15 +226,15 @@ void GermaniumCalibration::addFile(const std::string& fileName,
         }
 
         if (!layoutKnown) {
-            const bool lutFirst = lineMatchesLayout(line, piecewise, false);
-            const bool groupThenLut = lineMatchesLayout(line, piecewise, true);
-            if (lutFirst == groupThenLut) {
+            const bool idFirst = lineMatchesLayout(line, piecewise, false);
+            const bool groupThenId = lineMatchesLayout(line, piecewise, true);
+            if (idFirst == groupThenId) {
                 throw parseError(
                     fileName, lineNumber,
-                    lutFirst ? "ambiguous calibration-column layout"
+                    idFirst ? "ambiguous calibration-column layout"
                              : "invalid calibration-column layout");
             }
-            hasDetectorGroup = groupThenLut;
+            hasDetectorGroup = groupThenId;
             layoutKnown = true;
         }
 
@@ -248,13 +248,13 @@ void GermaniumCalibration::addFile(const std::string& fileName,
             long long detectorGroup = 0;
             input >> detectorGroup;
         }
-        const UShort_t detectorLUT =
-            readDetectorLUT(input, fileName, lineNumber);
+        const UShort_t detectorID =
+            readDetectorID(input, fileName, lineNumber);
 
-        if (stage.detectors.find(detectorLUT) != stage.detectors.end()) {
+        if (stage.detectors.find(detectorID) != stage.detectors.end()) {
             throw parseError(fileName, lineNumber,
-                             "duplicate detector LUT " +
-                             std::to_string(detectorLUT));
+                             "duplicate detector ID " +
+                             std::to_string(detectorID));
         }
 
         DetectorCalibration detectorCalibration;
@@ -295,7 +295,7 @@ void GermaniumCalibration::addFile(const std::string& fileName,
         }
 
         requireEndOfLine(input, fileName, lineNumber);
-        stage.detectors.emplace(detectorLUT,
+        stage.detectors.emplace(detectorID,
                                 std::move(detectorCalibration));
     }
 

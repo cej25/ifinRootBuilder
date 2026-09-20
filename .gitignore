@@ -1,0 +1,16 @@
+build/
+cmake-build-*/
+
+*.o
+*.a
+*.so
+*.dylib
+analyse_raw
+
+*.root
+
+.DS_Store
+.vscode/
+.idea/
+*~
+*.swp

@@ -22,18 +22,18 @@ void GermaniumDetectorHistograms::setCalibratedEnergyAxes()
     }
 }
 
-TH1D& GermaniumDetectorHistograms::spectrumFor(UShort_t detectorLUT)
+TH1D& GermaniumDetectorHistograms::spectrumFor(UShort_t detectorID)
 {
-    const auto existing = spectra_.find(detectorLUT);
+    const auto existing = spectra_.find(detectorID);
     if (existing != spectra_.end()) {
         return *existing->second;
     }
 
     std::ostringstream suffix;
-    suffix << std::setw(2) << std::setfill('0') << detectorLUT;
-    const std::string name = "h1_Ge_noVeto_E_LUT" + suffix.str();
-    const std::string title = "Germanium LUT " +
-        std::to_string(detectorLUT) + ";" +
+    suffix << std::setw(2) << std::setfill('0') << detectorID;
+    const std::string name = "h1_Ge_noVeto_E_ID" + suffix.str();
+    const std::string title = "Germanium ID " +
+        std::to_string(detectorID) + ";" +
         (calibrated_ ? "Energy [keV]" : "Energy [raw units]") +
         ";Counts";
 
@@ -46,13 +46,21 @@ TH1D& GermaniumDetectorHistograms::spectrumFor(UShort_t detectorLUT)
     histogram->SetOption("HIST");
 
     TH1D& result = *histogram;
-    spectra_.emplace(detectorLUT, std::move(histogram));
+    spectra_.emplace(detectorID, std::move(histogram));
     return result;
 }
 
-void GermaniumDetectorHistograms::fill(UShort_t detectorLUT, double energy)
+void GermaniumDetectorHistograms::fill(UShort_t detectorID, double energy)
 {
-    spectrumFor(detectorLUT).Fill(energy);
+    spectrumFor(detectorID).Fill(energy);
+}
+
+void GermaniumDetectorHistograms::merge(
+    const GermaniumDetectorHistograms& other)
+{
+    for (const auto& item : other.spectra_) {
+        spectrumFor(item.first).Add(item.second.get());
+    }
 }
 
 void GermaniumDetectorHistograms::write(

@@ -35,21 +35,21 @@ DetectorHistograms::DetectorHistograms(
         config::kMultiplicityBins, config::kMultiplicityMin,
         config::kMultiplicityMax);
 
-    const std::string lutName = prefix + "_LUT";
-    const std::string lutTitle = std::string(definition.title)
-        + " LUT occupancy;detectorLUT;Hits";
-    lutOccupancy_ = std::make_unique<TH1D>(
-        lutName.c_str(), lutTitle.c_str(),
-        config::kLutBins, config::kLutMin, config::kLutMax);
+    const std::string idName = prefix + "_ID";
+    const std::string idTitle = std::string(definition.title)
+        + " ID occupancy;Detector ID;Hits";
+    idOccupancy_ = std::make_unique<TH1D>(
+        idName.c_str(), idTitle.c_str(),
+        config::kIdBins, config::kIdMin, config::kIdMax);
 
     energy_->SetDirectory(nullptr);
     time_->SetDirectory(nullptr);
     multiplicity_->SetDirectory(nullptr);
-    lutOccupancy_->SetDirectory(nullptr);
+    idOccupancy_->SetDirectory(nullptr);
     energy_->SetOption("HIST");
     time_->SetOption("HIST");
     multiplicity_->SetOption("HIST");
-    lutOccupancy_->SetOption("HIST");
+    idOccupancy_->SetOption("HIST");
 }
 
 DetectorHistograms::~DetectorHistograms() = default;
@@ -71,11 +71,11 @@ const char* DetectorHistograms::directoryName() const
     return definition_->directory;
 }
 
-void DetectorHistograms::fillHit(unsigned short detectorLUT,
+void DetectorHistograms::fillHit(unsigned short detectorID,
                                  double energy,
                                  double relativeTimeNs)
 {
-    lutOccupancy_->Fill(detectorLUT);
+    idOccupancy_->Fill(detectorID);
     energy_->Fill(energy);
     time_->Fill(relativeTimeNs);
 }
@@ -83,6 +83,17 @@ void DetectorHistograms::fillHit(unsigned short detectorLUT,
 void DetectorHistograms::fillMultiplicity(unsigned int multiplicity)
 {
     multiplicity_->Fill(multiplicity);
+}
+
+void DetectorHistograms::merge(const DetectorHistograms& other)
+{
+    if (detectorType() != other.detectorType()) {
+        throw std::logic_error("Cannot merge different detector types");
+    }
+    energy_->Add(other.energy_.get());
+    time_->Add(other.time_.get());
+    multiplicity_->Add(other.multiplicity_.get());
+    idOccupancy_->Add(other.idOccupancy_.get());
 }
 
 void DetectorHistograms::setCalibratedEnergyAxis()
@@ -100,7 +111,7 @@ TDirectory* DetectorHistograms::write(TDirectory& parentDirectory) const
 
     detectorDirectory->cd();
     multiplicity_->Write();
-    lutOccupancy_->Write();
+    idOccupancy_->Write();
 
     TDirectory* energyDirectory = detectorDirectory->mkdir("Energy");
     TDirectory* timeDirectory = detectorDirectory->mkdir("Time");

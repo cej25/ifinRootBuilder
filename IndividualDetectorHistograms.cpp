@@ -16,19 +16,19 @@ IndividualDetectorHistograms::IndividualDetectorHistograms(
 
 IndividualDetectorHistograms::~IndividualDetectorHistograms() = default;
 
-TH1D& IndividualDetectorHistograms::spectrumFor(unsigned short detectorLUT)
+TH1D& IndividualDetectorHistograms::spectrumFor(unsigned short detectorID)
 {
-    const auto existing = spectra_.find(detectorLUT);
+    const auto existing = spectra_.find(detectorID);
     if (existing != spectra_.end()) {
         return *existing->second;
     }
 
     std::ostringstream suffix;
-    suffix << std::setw(2) << std::setfill('0') << detectorLUT;
+    suffix << std::setw(2) << std::setfill('0') << detectorID;
     const std::string name = "h1_" +
-        std::string(definition_->histogramTag) + "_E_LUT" + suffix.str();
-    const std::string title = std::string(definition_->title) + " LUT " +
-        std::to_string(detectorLUT) + ";Energy [raw units];Counts";
+        std::string(definition_->histogramTag) + "_E_ID" + suffix.str();
+    const std::string title = std::string(definition_->title) + " ID " +
+        std::to_string(detectorID) + ";Energy [raw units];Counts";
 
     auto histogram = std::make_unique<TH1D>(
         name.c_str(), title.c_str(),
@@ -39,14 +39,25 @@ TH1D& IndividualDetectorHistograms::spectrumFor(unsigned short detectorLUT)
     histogram->SetOption("HIST");
 
     TH1D& result = *histogram;
-    spectra_.emplace(detectorLUT, std::move(histogram));
+    spectra_.emplace(detectorID, std::move(histogram));
     return result;
 }
 
 void IndividualDetectorHistograms::fill(
-    unsigned short detectorLUT, double energy)
+    unsigned short detectorID, double energy)
 {
-    spectrumFor(detectorLUT).Fill(energy);
+    spectrumFor(detectorID).Fill(energy);
+}
+
+void IndividualDetectorHistograms::merge(
+    const IndividualDetectorHistograms& other)
+{
+    if (definition_->type != other.definition_->type) {
+        throw std::logic_error("Cannot merge different detector types");
+    }
+    for (const auto& item : other.spectra_) {
+        spectrumFor(item.first).Add(item.second.get());
+    }
 }
 
 void IndividualDetectorHistograms::write(

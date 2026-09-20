@@ -10,10 +10,10 @@
 
 namespace {
 
-bool inLutRange(unsigned short lut, unsigned short minimum,
+bool inIdRange(unsigned short id, unsigned short minimum,
                 unsigned short maximum)
 {
-    return lut >= minimum && lut <= maximum;
+    return id >= minimum && id <= maximum;
 }
 
 std::unique_ptr<TH1D> makeGatedSpectrum(
@@ -55,11 +55,11 @@ AngularCoincidenceHistograms::~AngularCoincidenceHistograms() = default;
 
 void AngularCoincidenceHistograms::fillEvent(
     const std::vector<double>& gammaEnergies,
-    const std::vector<unsigned short>& gammaLUTs)
+    const std::vector<unsigned short>& gammaIDs)
 {
-    if (gammaEnergies.size() != gammaLUTs.size()) {
+    if (gammaEnergies.size() != gammaIDs.size()) {
         throw std::logic_error(
-            "Angular coincidence energies and LUTs have different sizes");
+            "Angular coincidence energies and IDs have different sizes");
     }
 
     for (std::size_t first = 0; first < gammaEnergies.size(); ++first) {
@@ -67,18 +67,18 @@ void AngularCoincidenceHistograms::fillEvent(
              second < gammaEnergies.size(); ++second) {
             const double energies[2] = {
                 gammaEnergies[first], gammaEnergies[second]};
-            const unsigned short luts[2] = {
-                gammaLUTs[first], gammaLUTs[second]};
+            const unsigned short ids[2] = {
+                gammaIDs[first], gammaIDs[second]};
             for (int orientation = 0; orientation < 2; ++orientation) {
                 const double allEnergy = energies[orientation];
                 const double angularEnergy = energies[1 - orientation];
-                const unsigned short angularLUT = luts[1 - orientation];
-                const bool isForward = inLutRange(
-                    angularLUT, config::kForwardLUTMin,
-                    config::kForwardLUTMax);
-                const bool isBackward = inLutRange(
-                    angularLUT, config::kBackwardLUTMin,
-                    config::kBackwardLUTMax);
+                const unsigned short angularID = ids[1 - orientation];
+                const bool isForward = inIdRange(
+                    angularID, config::kForwardIDMin,
+                    config::kForwardIDMax);
+                const bool isBackward = inIdRange(
+                    angularID, config::kBackwardIDMin,
+                    config::kBackwardIDMax);
                 for (GateHistograms& gate : gates_) {
                     if (allEnergy < gate.minimum ||
                         allEnergy >= gate.maximumExclusive) {
@@ -101,6 +101,18 @@ void AngularCoincidenceHistograms::setCalibratedEnergyAxes()
     for (GateHistograms& gate : gates_) {
         gate.forward->GetXaxis()->SetTitle("Energy [keV]");
         gate.backward->GetXaxis()->SetTitle("Energy [keV]");
+    }
+}
+
+void AngularCoincidenceHistograms::merge(
+    const AngularCoincidenceHistograms& other)
+{
+    if (gates_.size() != other.gates_.size()) {
+        throw std::logic_error("Cannot merge different angular gate sets");
+    }
+    for (std::size_t index = 0; index < gates_.size(); ++index) {
+        gates_[index].forward->Add(other.gates_[index].forward.get());
+        gates_[index].backward->Add(other.gates_[index].backward.get());
     }
 }
 

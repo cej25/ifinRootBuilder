@@ -17,8 +17,9 @@ public:
         const AngularCoincidenceHistograms&) = delete;
 
     void fillEvent(const std::vector<double>& gammaEnergies,
-                   const std::vector<unsigned short>& gammaLUTs);
+                   const std::vector<unsigned short>& gammaIDs);
     void setCalibratedEnergyAxes();
+    void merge(const AngularCoincidenceHistograms& other);
     void write(TDirectory& gammaCoincidenceDirectory) const;
 
 private:

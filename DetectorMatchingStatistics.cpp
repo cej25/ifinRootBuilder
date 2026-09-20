@@ -16,24 +16,24 @@ double percentage(std::uint64_t count, std::uint64_t total)
 } // namespace
 
 DetectorMatchingStatistics::EventResult DetectorMatchingStatistics::record(
-    const std::vector<unsigned short>& germaniumLUTs,
-    const std::vector<unsigned short>& bgoLUTs)
+    const std::vector<unsigned short>& germaniumIDs,
+    const std::vector<unsigned short>& bgoIDs)
 {
     ++events_;
 
     std::unordered_map<unsigned short, unsigned int> unmatchedGermanium;
-    bool repeatedGermaniumLUT = false;
-    for (const unsigned short lut : germaniumLUTs) {
-        unsigned int& count = unmatchedGermanium[lut];
+    bool repeatedGermaniumID = false;
+    for (const unsigned short id : germaniumIDs) {
+        unsigned int& count = unmatchedGermanium[id];
         ++count;
         if (count == 2) {
-            repeatedGermaniumLUT = true;
+            repeatedGermaniumID = true;
         }
     }
 
     unsigned int extraBgoMultiplicity = 0;
-    for (const unsigned short lut : bgoLUTs) {
-        auto germanium = unmatchedGermanium.find(lut);
+    for (const unsigned short id : bgoIDs) {
+        auto germanium = unmatchedGermanium.find(id);
         if (germanium != unmatchedGermanium.end() && germanium->second > 0) {
             --germanium->second;
         } else {
@@ -41,19 +41,27 @@ DetectorMatchingStatistics::EventResult DetectorMatchingStatistics::record(
         }
     }
 
-    if (repeatedGermaniumLUT) {
-        ++eventsWithRepeatedGermaniumLUT_;
+    if (repeatedGermaniumID) {
+        ++eventsWithRepeatedGermaniumID_;
     }
 
-    return {extraBgoMultiplicity, repeatedGermaniumLUT};
+    return {extraBgoMultiplicity, repeatedGermaniumID};
+}
+
+void DetectorMatchingStatistics::merge(
+    const DetectorMatchingStatistics& other)
+{
+    events_ += other.events_;
+    eventsWithRepeatedGermaniumID_ +=
+        other.eventsWithRepeatedGermaniumID_;
 }
 
 void DetectorMatchingStatistics::print(std::ostream& output) const
 {
     output << "\n=== Repeated-germanium diagnostic ===\n"
            << std::fixed << std::setprecision(2)
-           << "Events with multiple accepted Ge hits in the same LUT: "
-           << eventsWithRepeatedGermaniumLUT_ << " / " << events_ << " ("
-           << percentage(eventsWithRepeatedGermaniumLUT_, events_)
+           << "Events with multiple accepted Ge hits in the same ID: "
+           << eventsWithRepeatedGermaniumID_ << " / " << events_ << " ("
+           << percentage(eventsWithRepeatedGermaniumID_, events_)
            << "%)\n";
 }

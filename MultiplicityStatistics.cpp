@@ -72,6 +72,29 @@ void MultiplicityStatistics::record(
     }
 }
 
+void MultiplicityStatistics::merge(const MultiplicityStatistics& other)
+{
+    for (std::size_t detector = 0;
+         detector < detectorFoldCounts_.size(); ++detector) {
+        auto& destination = detectorFoldCounts_[detector];
+        const auto& source = other.detectorFoldCounts_[detector];
+        if (destination.size() < source.size()) {
+            destination.resize(source.size(), 0);
+        }
+        for (std::size_t fold = 0; fold < source.size(); ++fold) {
+            destination[fold] += source[fold];
+        }
+    }
+    for (std::size_t fold = 0; fold < eventCounts_.size(); ++fold) {
+        eventCounts_[fold] += other.eventCounts_[fold];
+        for (std::size_t detector = 0;
+             detector < detectorHitTotals_[fold].size(); ++detector) {
+            detectorHitTotals_[fold][detector] +=
+                other.detectorHitTotals_[fold][detector];
+        }
+    }
+}
+
 void MultiplicityStatistics::printDetectorBreakdown(
     std::ostream& output,
     unsigned short detectorType) const

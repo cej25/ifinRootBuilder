@@ -27,6 +27,7 @@ public:
         const std::vector<double>& germaniumEnergies);
     void fillEvent(unsigned int germaniumMultiplicityAfterBgoVeto,
                    bool siliconCoincident, bool foldValid);
+    void merge(const GermaniumConditionHistograms& other);
     void write(TDirectory& germaniumDirectory,
                TDirectory& energyDirectory,
                TDirectory& timeDirectory) const;

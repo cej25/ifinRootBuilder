@@ -1,5 +1,6 @@
 #include "RawAnalysis.h"
 
+#include <TH1.h>
 #include <TROOT.h>
 
 #include <exception>
@@ -20,17 +21,18 @@ void printUsage(const char* program)
         << "[--run-cal first last file.cal] "
         << "[--run-mcal first last file.mcal] "
         << "[--diagnostics|--no-diagnostics] "
-        << "[--exclude-ge LUT[,LUT...]] "
+        << "[--threads N] "
+        << "[--exclude-ge ID[,ID...]] "
         << "input1.root [input2.root ...]\n\n"
         << "Examples:\n"
-        << "  " << program << " analysis.root Run_30cm_000123.root\n"
+        << "  " << program << " analysis.root Run_30um_000123.root\n"
         << "  " << program
         << " analysis.root --cal coarse.cal --mcal fine.mcal "
-        << "Run_30cm_*.root\n"
+        << "Run_30um_*.root\n"
         << "  " << program
         << " analysis.root --run-cal 1 10 run1-10.cal "
         << "--run-mcal 1 10 run1-10.mcal "
-        << "--run-cal 11 20 run11-20.cal Run_30cm_*.root\n";
+        << "--run-cal 11 20 run11-20.cal Run_30um_*.root\n";
 }
 
 unsigned int parseRunNumber(const std::string& text)
@@ -44,7 +46,7 @@ unsigned int parseRunNumber(const std::string& text)
     return static_cast<unsigned int>(value);
 }
 
-void addExcludedGermaniumLUTs(
+void addExcludedGermaniumIDs(
     const std::string& text, RawAnalysis& analysis)
 {
     if (text.empty()) {
@@ -59,14 +61,14 @@ void addExcludedGermaniumLUTs(
                 "invalid germanium detector exclusion list '" + text + "'");
         }
         std::size_t consumed = 0;
-        const unsigned long detectorLUT = std::stoul(value, &consumed);
+        const unsigned long detectorID = std::stoul(value, &consumed);
         if (consumed != value.size() ||
-            detectorLUT > std::numeric_limits<unsigned int>::max()) {
+            detectorID > std::numeric_limits<unsigned int>::max()) {
             throw std::runtime_error(
-                "invalid germanium detector LUT '" + value + "'");
+                "invalid germanium detector ID '" + value + "'");
         }
-        analysis.excludeGermaniumLUT(
-            static_cast<unsigned int>(detectorLUT));
+        analysis.excludeGermaniumID(
+            static_cast<unsigned int>(detectorID));
     }
 }
 
@@ -75,6 +77,10 @@ void addExcludedGermaniumLUTs(
 int main(int argc, char** argv)
 {
     gROOT->SetBatch(true);
+    // Worker-local histograms deliberately share names before they are merged.
+    // Prevent ROOT from auto-registering them in the current directory, which
+    // would otherwise produce replacement warnings and ownership ambiguity.
+    TH1::AddDirectory(false);
 
     if (argc < 3) {
         printUsage(argv[0]);
@@ -91,13 +97,21 @@ int main(int argc, char** argv)
             const std::string value = argv[argument];
             if (value == "--diagnostics" || value == "--no-diagnostics") {
                 analysis.setDiagnosticsEnabled(value == "--diagnostics");
+            } else if (value == "--threads") {
+                if (argument + 1 >= argc) {
+                    std::cerr << "Error: --threads requires a positive integer.\n";
+                    return 1;
+                }
+                const unsigned int threadCount =
+                    parseRunNumber(argv[++argument]);
+                analysis.setThreadCount(threadCount);
             } else if (value == "--exclude-ge") {
                 if (argument + 1 >= argc) {
                     std::cerr << "Error: --exclude-ge requires a comma-separated "
-                              << "list of detector LUTs.\n";
+                              << "list of detector IDs.\n";
                     return 1;
                 }
-                addExcludedGermaniumLUTs(argv[++argument], analysis);
+                addExcludedGermaniumIDs(argv[++argument], analysis);
             } else if (value == "--cal" || value == "--mcal") {
                 if (argument + 1 >= argc) {
                     std::cerr << "Error: " << value

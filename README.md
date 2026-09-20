@@ -7,7 +7,7 @@ The program requires:
 - CMake 3.16 or newer;
 - a C++17 compiler;
 - a ROOT installation containing Core, RIO, Tree, TreePlayer, Hist, Graf, and
-  Gpad.
+  Gpad, with implicit multithreading support (Imt).
 
 Make sure the ROOT environment is active before configuring. For example,
 `root-config --version` should run successfully.
@@ -44,8 +44,26 @@ build/analyse_raw OUTPUT.root [OPTIONS] INPUT.root [INPUT2.root ...]
 Shell wildcards can be used for multiple input files:
 
 ```bash
-build/analyse_raw analysis.root Run_30cm_*.root
+build/analyse_raw analysis.root Run_30um_*.root
 ```
+
+### Multiple CPU cores
+
+Use `--threads N` to process independent ROOT entry ranges in parallel:
+
+```bash
+build/analyse_raw analysis.root --threads 8 Run_30um_*.root
+```
+
+Each worker fills its own histograms and diagnostics; the program merges them
+before writing the single output file. Omitting the option, or using
+`--threads 1`, retains serial processing. Start with the number of physical CPU
+cores available on the analysis machine. Storage throughput and the memory
+needed for one histogram set per active worker can limit useful scaling.
+
+Every successful run prints both the event-processing time and the total
+analysis time, together with the corresponding event rates. This makes, for
+example, `--threads 1` and `--threads 8` runs directly comparable.
 
 ### Calibration
 
@@ -56,7 +74,7 @@ left to right in command-line order:
 build/analyse_raw analysis.root \
     --cal calibrations/152Eu.cal \
     --mcal calibrations/pint_run_1-10.mcal \
-    Run_30cm_000001.root
+    Run_30um_000001.root
 ```
 
 Different calibration chains can be assigned to inclusive run ranges:
@@ -67,7 +85,7 @@ build/analyse_raw analysis.root \
     --run-mcal 1 10 fine_1-10.mcal \
     --run-cal 11 20 coarse_11-20.cal \
     --run-mcal 11 20 fine_11-20.mcal \
-    Run_30cm_*.root
+    Run_30um_*.root
 ```
 
 Stages with the same run range are applied in command-line order. Run ranges
@@ -81,12 +99,12 @@ ending in `_XXXXXX.root`.
 
 ### Excluding germanium detectors
 
-Use `--exclude-ge` with a comma-separated list of zero-based Ge LUT numbers:
+Use `--exclude-ge` with a comma-separated list of zero-based Ge ID numbers:
 
 ```bash
 build/analyse_raw analysis.root \
     --exclude-ge 0,7,12 \
-    Run_30cm_*.root
+    Run_30um_*.root
 ```
 
 The option can be repeated:
@@ -95,17 +113,17 @@ The option can be repeated:
 build/analyse_raw analysis.root \
     --exclude-ge 0,7 \
     --exclude-ge 12 \
-    Run_30cm_*.root
+    Run_30um_*.root
 ```
 
-Valid Ge LUT numbers are 0--24.
+Valid Ge ID numbers are 0--24.
 
 ### Diagnostic output
 
 Detailed terminal diagnostics are enabled by default. Disable them with:
 
 ```bash
-build/analyse_raw analysis.root --no-diagnostics Run_30cm_*.root
+build/analyse_raw analysis.root --no-diagnostics Run_30um_*.root
 ```
 
 They can be explicitly enabled with `--diagnostics`. If both switches are
@@ -119,5 +137,5 @@ build/analyse_raw analysis.root \
     --exclude-ge 7 \
     --cal calibrations/152Eu.cal \
     --mcal calibrations/pint_run_1-10.mcal \
-    Run_30cm_000001.root
+    Run_30um_000001.root
 ```

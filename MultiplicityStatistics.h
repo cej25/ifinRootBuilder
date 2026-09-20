@@ -16,6 +16,7 @@ public:
     MultiplicityStatistics();
 
     void record(const std::vector<unsigned int>& detectorMultiplicities);
+    void merge(const MultiplicityStatistics& other);
     void print(std::ostream& output, const std::string& label) const;
 
 private:

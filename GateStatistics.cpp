@@ -57,6 +57,22 @@ void GateStatistics::recordBgoVetoDecision(bool survivesVeto)
     germaniumVetoSurvivors_ += survivesVeto;
 }
 
+void GateStatistics::merge(const GateStatistics& other)
+{
+    germaniumHits_ += other.germaniumHits_;
+    germaniumTimingPass_ += other.germaniumTimingPass_;
+    bgoHits_ += other.bgoHits_;
+    bgoTimingPass_ += other.bgoTimingPass_;
+    siliconHits_ += other.siliconHits_;
+    siliconTimingPass_ += other.siliconTimingPass_;
+    siliconEnergyPass_ += other.siliconEnergyPass_;
+    siliconCombinedPass_ += other.siliconCombinedPass_;
+    events_ += other.events_;
+    siliconCoincidenceEvents_ += other.siliconCoincidenceEvents_;
+    germaniumVetoCandidates_ += other.germaniumVetoCandidates_;
+    germaniumVetoSurvivors_ += other.germaniumVetoSurvivors_;
+}
+
 void GateStatistics::print(std::ostream& output) const
 {
     const auto rangeLabel = [](const char* prefix, double minimum,
@@ -89,9 +105,9 @@ void GateStatistics::print(std::ostream& output) const
               siliconCoincidenceEvents_, events_);
 
     output << "Accepted, time-gated Ge hits (after calibration-event rejection):\n";
-    printPass(output, "Surviving matching-LUT BGO veto",
+    printPass(output, "Surviving matching-ID BGO veto",
               germaniumVetoSurvivors_, germaniumVetoCandidates_);
-    printPass(output, "Rejected by matching-LUT BGO veto",
+    printPass(output, "Rejected by matching-ID BGO veto",
               germaniumVetoCandidates_ - germaniumVetoSurvivors_,
               germaniumVetoCandidates_);
 }

@@ -156,6 +156,22 @@ void GermaniumConditionHistograms::fillEvent(
     }
 }
 
+void GermaniumConditionHistograms::merge(
+    const GermaniumConditionHistograms& other)
+{
+    unconditionedGammaGammaProjection_->Add(
+        other.unconditionedGammaGammaProjection_.get());
+    bgoVetoedSiliconGammaGammaProjection_->Add(
+        other.bgoVetoedSiliconGammaGammaProjection_.get());
+    bgoVetoed_->Add(other.bgoVetoed_.get());
+    siliconBgoVetoed_->Add(other.siliconBgoVetoed_.get());
+    multiplicityAfterBgoVeto_->Add(other.multiplicityAfterBgoVeto_.get());
+    foldValidMultiplicity_->Add(other.foldValidMultiplicity_.get());
+    foldValidEnergy_->Add(other.foldValidEnergy_.get());
+    foldInclusiveEnergy_->Add(other.foldInclusiveEnergy_.get());
+    energyVsTime_->Add(other.energyVsTime_.get());
+}
+
 void GermaniumConditionHistograms::write(
     TDirectory& germaniumDirectory, TDirectory& energyDirectory,
     TDirectory& timeDirectory) const

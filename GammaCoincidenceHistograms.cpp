@@ -132,6 +132,16 @@ void GammaCoincidenceHistograms::setCalibratedEnergyAxes()
     }
 }
 
+void GammaCoincidenceHistograms::merge(
+    const GammaCoincidenceHistograms& other)
+{
+    gammaGamma_->Add(other.gammaGamma_.get());
+    gammaGammaSiliconCoincident_->Add(
+        other.gammaGammaSiliconCoincident_.get());
+    backgroundSubtractedProjectionSiliconCoincident_->Add(
+        other.backgroundSubtractedProjectionSiliconCoincident_.get());
+}
+
 void GammaCoincidenceHistograms::write(TDirectory& parentDirectory) const
 {
     TDirectory* directory = parentDirectory.mkdir("Coincidences");

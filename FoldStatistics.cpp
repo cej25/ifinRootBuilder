@@ -42,6 +42,20 @@ bool FoldStatistics::record(unsigned int germaniumMultiplicity,
     return foldValid;
 }
 
+void FoldStatistics::merge(const FoldStatistics& other)
+{
+    totalEvents_ += other.totalEvents_;
+    validFoldEvents_ += other.validFoldEvents_;
+    invalidFoldEvents_ += other.invalidFoldEvents_;
+    validAndWellMatchedEvents_ += other.validAndWellMatchedEvents_;
+    for (std::size_t ge = 0; ge < bgoByGermanium_.size(); ++ge) {
+        foldValidByGermanium_[ge] += other.foldValidByGermanium_[ge];
+        for (std::size_t bgo = 0; bgo < bgoByGermanium_[ge].size(); ++bgo) {
+            bgoByGermanium_[ge][bgo] += other.bgoByGermanium_[ge][bgo];
+        }
+    }
+}
+
 void FoldStatistics::print(std::ostream& output) const
 {
     output << "\n=== FoldValid statistics ===\n"
@@ -54,7 +68,7 @@ void FoldStatistics::print(std::ostream& output) const
            << " / " << totalEvents_ << " ("
            << percentage(invalidFoldEvents_, totalEvents_) << "%)\n"
            << "FoldValid events with every BGO hit uniquely matched to a "
-           << "same-LUT Ge hit: " << validAndWellMatchedEvents_ << " / "
+           << "same-ID Ge hit: " << validAndWellMatchedEvents_ << " / "
            << validFoldEvents_ << " ("
            << percentage(validAndWellMatchedEvents_, validFoldEvents_)
            << "%)\n";

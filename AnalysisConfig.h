@@ -7,7 +7,8 @@ namespace config {
 
 inline constexpr const char* kTreeName = "events";
 
-inline constexpr const char* kDetectorLUTBranch   = "detectorLUT";
+// The stored branch retains its historical name; analysis terminology uses ID.
+inline constexpr const char* kDetectorIDBranch   = "detectorLUT";
 inline constexpr const char* kDetectorTypeBranch  = "detectorType";
 inline constexpr const char* kEnergyBranch        = "energy";
 inline constexpr const char* kPsdBranch           = "psd";
@@ -26,9 +27,9 @@ inline constexpr double kMultiplicityMin  = -0.5;
 inline constexpr double kMultiplicityMax  = 100.5;
 
 // All detector types currently have at most 25 physical IDs: 0--24.
-inline constexpr int    kLutBins = 25;
-inline constexpr double kLutMin  = -0.5;
-inline constexpr double kLutMax  = 24.5;
+inline constexpr int    kIdBins = 25;
+inline constexpr double kIdMin  = -0.5;
+inline constexpr double kIdMax  = 24.5;
 
 inline constexpr unsigned short kGermaniumType = 0;
 inline constexpr unsigned short kSiliconType   = 1;
@@ -48,7 +49,7 @@ inline constexpr double kSiliconEnergyMax    = 4000.0;
 inline constexpr int    kGermaniumSpectrumBins = 4096;
 inline constexpr double kGermaniumSpectrumMin  = 0.0;
 inline constexpr double kGermaniumSpectrumMax  = 4096.0;
-inline constexpr int    kGermaniumLutBins      = 25;
+inline constexpr int    kGermaniumIdBins      = 25;
 
 inline constexpr int    kGammaBins = 2048;
 inline constexpr double kGammaMin  = 0.0;
@@ -103,8 +104,8 @@ inline constexpr std::array<DetectorDefinition, 4> kDetectors{{
 struct GermaniumAngleGroup {
     const char* name;
     const char* title;
-    unsigned short firstLUT;
-    unsigned short lastLUT;
+    unsigned short firstID;
+    unsigned short lastID;
 };
 
 inline constexpr std::array<GermaniumAngleGroup, 5> kGermaniumAngleGroups{{
@@ -115,10 +116,10 @@ inline constexpr std::array<GermaniumAngleGroup, 5> kGermaniumAngleGroups{{
     {"backward",        "Backward (143 deg)",      20, 24}
 }};
 
-inline constexpr unsigned short kForwardLUTMin = 0;
-inline constexpr unsigned short kForwardLUTMax = 4;
-inline constexpr unsigned short kBackwardLUTMin = 20;
-inline constexpr unsigned short kBackwardLUTMax = 24;
+inline constexpr unsigned short kForwardIDMin = 0;
+inline constexpr unsigned short kForwardIDMax = 4;
+inline constexpr unsigned short kBackwardIDMin = 20;
+inline constexpr unsigned short kBackwardIDMax = 24;
 
 // Optional RDDS gates on the all-detector (x) axis. Change the array size and
 // add entries here later; forward/backward projected spectra are then created

@@ -1,22 +1,33 @@
 #include "RawAnalysis.h"
 
 #include "AnalysisConfig.h"
-#include "DetectorMatchingStatistics.h"
-#include "FoldStatistics.h"
-#include "GateStatistics.h"
-#include "MultiplicityStatistics.h"
 
+#include <ROOT/RDataFrame.hxx>
+#include <ROOT/TTreeProcessorMT.hxx>
 #include <RtypesCore.h>
 #include <TChain.h>
+#include <TChainElement.h>
+#include <TDirectory.h>
 #include <TFile.h>
 #include <TH1D.h>
+#include <TObjArray.h>
+#include <TTree.h>
 #include <TTreeReader.h>
 #include <TTreeReaderValue.h>
 
 #include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <iomanip>
 #include <iostream>
 #include <limits>
+#include <memory>
+#include <mutex>
 #include <stdexcept>
+#include <sstream>
+#include <string>
+#include <thread>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -40,19 +51,52 @@ const config::DetectorDefinition& definitionFor(unsigned short type)
     return *found;
 }
 
+std::string formatElapsed(double seconds)
+{
+    const auto totalMilliseconds = static_cast<unsigned long long>(
+        std::llround(seconds * 1000.0));
+    const auto hours = totalMilliseconds / 3600000ULL;
+    const auto minutes = (totalMilliseconds / 60000ULL) % 60ULL;
+    const auto wholeSeconds = (totalMilliseconds / 1000ULL) % 60ULL;
+    const auto milliseconds = totalMilliseconds % 1000ULL;
+
+    std::ostringstream text;
+    text << std::setfill('0') << std::setw(2) << hours << ':'
+         << std::setw(2) << minutes << ':'
+         << std::setw(2) << wholeSeconds << '.'
+         << std::setw(3) << milliseconds;
+    return text.str();
+}
+
 } // namespace
 
 RawAnalysis::RawAnalysis()
     : individualSiliconHistograms_(definitionFor(config::kSiliconType)),
       individualBgoHistograms_(definitionFor(config::kBgoType)),
-      individualLabrHistograms_(definitionFor(config::kLabrType))
+      individualLabrHistograms_(definitionFor(config::kLabrType)),
+      eventMultiplicity_(std::make_unique<TH1D>(
+          "h1_EventMultiplicity",
+          "Event multiplicity;All hits in event;Events",
+          config::kMultiplicityBins,
+          config::kMultiplicityMin,
+          config::kMultiplicityMax)),
+      unknownDetectorTypes_(std::make_unique<TH1D>(
+          "h1_UnknownDetectorType",
+          "Unrecognised detector type;detectorType;Hits",
+          65536, -0.5, 65535.5))
 {
     detectorHistograms_.reserve(config::kDetectors.size());
     for (const auto& definition : config::kDetectors) {
         detectorIndex_.emplace(definition.type, detectorHistograms_.size());
         detectorHistograms_.emplace_back(definition);
     }
+    eventMultiplicity_->SetDirectory(nullptr);
+    unknownDetectorTypes_->SetDirectory(nullptr);
+    eventMultiplicity_->SetOption("HIST");
+    unknownDetectorTypes_->SetOption("HIST");
 }
+
+RawAnalysis::~RawAnalysis() = default;
 
 void RawAnalysis::addCalFile(const std::string& fileName)
 {
@@ -64,16 +108,14 @@ void RawAnalysis::addMcalFile(const std::string& fileName)
     calibrationManager_.addGlobalMcalFile(fileName);
 }
 
-void RawAnalysis::addRunCalFile(
-    unsigned int firstRun, unsigned int lastRun,
-    const std::string& fileName)
+void RawAnalysis::addRunCalFile(unsigned int firstRun, unsigned int lastRun,
+                                const std::string& fileName)
 {
     calibrationManager_.addRunCalFile(firstRun, lastRun, fileName);
 }
 
-void RawAnalysis::addRunMcalFile(
-    unsigned int firstRun, unsigned int lastRun,
-    const std::string& fileName)
+void RawAnalysis::addRunMcalFile(unsigned int firstRun, unsigned int lastRun,
+                                 const std::string& fileName)
 {
     calibrationManager_.addRunMcalFile(firstRun, lastRun, fileName);
 }
@@ -83,54 +125,40 @@ void RawAnalysis::setDiagnosticsEnabled(bool enabled)
     diagnosticsEnabled_ = enabled;
 }
 
-void RawAnalysis::excludeGermaniumLUT(unsigned int detectorLUT)
+void RawAnalysis::setThreadCount(unsigned int threadCount)
 {
-    if (detectorLUT >= config::kGermaniumLutBins) {
-        throw std::runtime_error(
-            "germanium detector LUT must be between 0 and " +
-            std::to_string(config::kGermaniumLutBins - 1));
+    if (threadCount == 0) {
+        throw std::runtime_error("thread count must be at least 1");
     }
-    excludedGermaniumLUTs_.insert(
-        static_cast<unsigned short>(detectorLUT));
+    threadCount_ = threadCount;
 }
 
-int RawAnalysis::run(const std::vector<std::string>& inputPatterns,
-                     const std::string& outputFileName)
+void RawAnalysis::excludeGermaniumID(unsigned int detectorID)
 {
-    TChain chain(config::kTreeName);
-    for (const auto& pattern : inputPatterns) {
-        if (chain.Add(pattern.c_str()) == 0) {
-            std::cerr << "Warning: no file matched '" << pattern << "'.\n";
-        }
+    if (detectorID >= config::kGermaniumIdBins) {
+        throw std::runtime_error(
+            "germanium detector ID must be between 0 and " +
+            std::to_string(config::kGermaniumIdBins - 1));
     }
+    excludedGermaniumIDs_.insert(static_cast<unsigned short>(detectorID));
+}
 
-    if (chain.GetNtrees() == 0) {
-        std::cerr << "Error: no input trees called '" << config::kTreeName
-                  << "' were added.\n";
-        return 2;
+void RawAnalysis::configureCalibratedAxes()
+{
+    const auto germanium = detectorIndex_.find(config::kGermaniumType);
+    if (germanium != detectorIndex_.end()) {
+        detectorHistograms_[germanium->second].setCalibratedEnergyAxis();
     }
+    gammaCoincidences_.setCalibratedEnergyAxes();
+    angularCoincidences_.setCalibratedEnergyAxes();
+    individualGermaniumHistograms_.setCalibratedEnergyAxes();
+    germaniumConditionHistograms_.setCalibratedEnergyAxes();
+}
 
-    std::cout << "Reading " << chain.GetNtrees() << " file(s), "
-              << chain.GetEntries() << " events.\n";
-
-    if (!calibrationManager_.empty()) {
-        const auto germanium = detectorIndex_.find(config::kGermaniumType);
-        if (germanium != detectorIndex_.end()) {
-            detectorHistograms_[germanium->second].setCalibratedEnergyAxis();
-        }
-        gammaCoincidences_.setCalibratedEnergyAxes();
-        angularCoincidences_.setCalibratedEnergyAxes();
-        individualGermaniumHistograms_.setCalibratedEnergyAxes();
-        germaniumConditionHistograms_.setCalibratedEnergyAxes();
-        std::cout << "Germanium calibration is enabled"
-                  << (calibrationManager_.usesRunRanges()
-                          ? " with run-dependent ranges.\n"
-                          : ".\n");
-    }
-
-    TTreeReader reader(&chain);
-    TTreeReaderValue<std::vector<UShort_t>> detectorLUT(
-        reader, config::kDetectorLUTBranch);
+void RawAnalysis::processReader(TTreeReader& reader, bool showProgress)
+{
+    TTreeReaderValue<std::vector<UShort_t>> detectorID(
+        reader, config::kDetectorIDBranch);
     TTreeReaderValue<std::vector<UShort_t>> detectorType(
         reader, config::kDetectorTypeBranch);
     TTreeReaderValue<std::vector<UShort_t>> energy(
@@ -141,83 +169,43 @@ int RawAnalysis::run(const std::vector<std::string>& inputPatterns,
         reader, config::kRelativeNsBranch);
     TTreeReaderValue<std::vector<UShort_t>> relativePsTime(
         reader, config::kRelativePsBranch);
+    TTreeReaderValue<ULong_t> absoluteTime(
+        reader, config::kAbsoluteTimeBranch);
 
-    // events->Print() reports absoluteTime/g: a scalar ULong_t leaf.
-    TTreeReaderValue<ULong_t> absoluteTime(reader, config::kAbsoluteTimeBranch);
-
-    TH1D eventMultiplicity(
-        "h1_EventMultiplicity",
-        "Event multiplicity;All hits in event;Events",
-        config::kMultiplicityBins,
-        config::kMultiplicityMin,
-        config::kMultiplicityMax);
-    TH1D unknownDetectorTypes(
-        "h1_UnknownDetectorType",
-        "Unrecognised detector type;detectorType;Hits",
-        65536, -0.5, 65535.5);
-    eventMultiplicity.SetDirectory(nullptr);
-    unknownDetectorTypes.SetDirectory(nullptr);
-    eventMultiplicity.SetOption("HIST");
-    unknownDetectorTypes.SetOption("HIST");
-
-    ULong64_t processedEvents = 0;
-    ULong64_t malformedEvents = 0;
-    ULong64_t unknownHits = 0;
-    ULong64_t nonzeroPsdHits = 0;
-    ULong64_t missingCalibrationEvents = 0;
-    ULong64_t outOfRangeCalibrationEvents = 0;
-    ULong64_t nonFiniteCalibrationEvents = 0;
-    ULong_t firstAbsoluteTime = std::numeric_limits<ULong_t>::max();
-    ULong_t lastAbsoluteTime = 0;
-
-    MultiplicityStatistics combinedStatistics;
-    FoldStatistics foldStatistics;
-    GateStatistics gateStatistics;
-    DetectorMatchingStatistics detectorMatchingStatistics;
     const GermaniumCalibration* activeCalibration = nullptr;
-    int activeTreeNumber = -1;
+    std::string activeFileName;
     if (!calibrationManager_.usesRunRanges()) {
         activeCalibration = calibrationManager_.calibrationForRun(0);
     }
 
     while (reader.Next()) {
-        ++processedEvents;
-
-        if (calibrationManager_.usesRunRanges() &&
-            chain.GetTreeNumber() != activeTreeNumber) {
-            activeTreeNumber = chain.GetTreeNumber();
-            try {
-                const TFile* inputFile = chain.GetCurrentFile();
-                if (inputFile == nullptr) {
-                    throw std::runtime_error(
-                        "TChain did not provide the current input filename");
-                }
+        ++processedEvents_;
+        if (calibrationManager_.usesRunRanges()) {
+            TTree* tree = reader.GetTree();
+            TFile* inputFile = tree != nullptr ? tree->GetCurrentFile() : nullptr;
+            if (inputFile == nullptr) {
+                throw std::runtime_error(
+                    "TTreeReader did not provide the current input filename");
+            }
+            const std::string fileName = inputFile->GetName();
+            if (fileName != activeFileName) {
+                activeFileName = fileName;
                 const unsigned int run =
-                    RunCalibrationManager::runNumberFromFileName(
-                        inputFile->GetName());
-                activeCalibration =
-                    calibrationManager_.calibrationForRun(run);
-                std::cout << "Using "
-                          << activeCalibration->numberOfStages()
-                          << " calibration stage(s) for run " << run
-                          << ".\n";
-            } catch (const std::exception& error) {
-                std::cerr << "Calibration selection error: "
-                          << error.what() << "\n";
-                return 5;
+                    RunCalibrationManager::runNumberFromFileName(fileName);
+                activeCalibration = calibrationManager_.calibrationForRun(run);
             }
         }
 
         const std::size_t hitCount = detectorType->size();
         const bool vectorSizesAgree =
-            detectorLUT->size()    == hitCount &&
+            detectorID->size()     == hitCount &&
             energy->size()         == hitCount &&
             psd->size()            == hitCount &&
             relativeNsTime->size() == hitCount &&
             relativePsTime->size() == hitCount;
 
         if (!vectorSizesAgree) {
-            ++malformedEvents;
+            ++malformedEvents_;
             if (diagnosticsEnabled_) {
                 std::cerr << "Warning: branch-vector size mismatch in event "
                           << reader.GetCurrentEntry()
@@ -226,12 +214,12 @@ int RawAnalysis::run(const std::vector<std::string>& inputPatterns,
             continue;
         }
 
-        firstAbsoluteTime = std::min(firstAbsoluteTime, *absoluteTime);
-        lastAbsoluteTime = std::max(lastAbsoluteTime, *absoluteTime);
+        firstAbsoluteTime_ = std::min(firstAbsoluteTime_, *absoluteTime);
+        lastAbsoluteTime_ = std::max(lastAbsoluteTime_, *absoluteTime);
 
         std::vector<double> relativeTimesNs(hitCount, 0.0);
         std::vector<bool> acceptedGermanium(hitCount, false);
-        std::unordered_set<UShort_t> inTimeBgoLUTs;
+        std::unordered_set<UShort_t> inTimeBgoIDs;
         bool siliconCoincident = false;
 
         for (std::size_t hit = 0; hit < hitCount; ++hit) {
@@ -242,53 +230,45 @@ int RawAnalysis::run(const std::vector<std::string>& inputPatterns,
 
             const UShort_t type = detectorType->at(hit);
             if (type == config::kGermaniumType) {
-                if (excludedGermaniumLUTs_.count(detectorLUT->at(hit)) != 0) {
+                if (excludedGermaniumIDs_.count(detectorID->at(hit)) != 0) {
                     continue;
                 }
-                gateStatistics.recordGermanium(insideInclusive(
-                    relativeTimeNs,
-                    config::kGermaniumTimeMinNs,
+                gateStatistics_.recordGermanium(insideInclusive(
+                    relativeTimeNs, config::kGermaniumTimeMinNs,
                     config::kGermaniumTimeMaxNs));
             } else if (type == config::kBgoType) {
                 const bool passesTiming = insideInclusive(
-                    relativeTimeNs,
-                    config::kBgoVetoTimeMinNs,
+                    relativeTimeNs, config::kBgoVetoTimeMinNs,
                     config::kBgoVetoTimeMaxNs);
-                gateStatistics.recordBgo(passesTiming);
+                gateStatistics_.recordBgo(passesTiming);
                 if (passesTiming) {
-                    inTimeBgoLUTs.insert(detectorLUT->at(hit));
+                    inTimeBgoIDs.insert(detectorID->at(hit));
                 }
             } else if (type == config::kSiliconType) {
                 const bool passesTiming = insideInclusive(
-                    relativeTimeNs,
-                    config::kSiliconTimeMinNs,
+                    relativeTimeNs, config::kSiliconTimeMinNs,
                     config::kSiliconTimeMaxNs);
                 const bool passesEnergy = insideInclusive(
-                    energy->at(hit),
-                    config::kSiliconEnergyMin,
+                    energy->at(hit), config::kSiliconEnergyMin,
                     config::kSiliconEnergyMax);
-                gateStatistics.recordSilicon(passesTiming, passesEnergy);
+                gateStatistics_.recordSilicon(passesTiming, passesEnergy);
                 siliconCoincident = siliconCoincident ||
                     (passesTiming && passesEnergy);
             }
         }
-        gateStatistics.recordEvent(siliconCoincident);
+        gateStatistics_.recordEvent(siliconCoincident);
 
         std::vector<double> analysedEnergies(energy->begin(), energy->end());
         std::vector<double> gammaEnergies;
-        std::vector<unsigned short> gammaLUTs;
+        std::vector<unsigned short> gammaIDs;
         gammaEnergies.reserve(hitCount);
-        gammaLUTs.reserve(hitCount);
+        gammaIDs.reserve(hitCount);
 
         bool rejectEvent = false;
         for (std::size_t hit = 0; hit < hitCount; ++hit) {
-            if (detectorType->at(hit) != config::kGermaniumType) {
-                continue;
-            }
-            if (excludedGermaniumLUTs_.count(detectorLUT->at(hit)) != 0) {
-                continue;
-            }
-            if (!insideInclusive(relativeTimesNs[hit],
+            if (detectorType->at(hit) != config::kGermaniumType ||
+                excludedGermaniumIDs_.count(detectorID->at(hit)) != 0 ||
+                !insideInclusive(relativeTimesNs[hit],
                                  config::kGermaniumTimeMinNs,
                                  config::kGermaniumTimeMaxNs)) {
                 continue;
@@ -297,7 +277,7 @@ int RawAnalysis::run(const std::vector<std::string>& inputPatterns,
             const GermaniumCalibration::Result calibrated =
                 activeCalibration != nullptr
                     ? activeCalibration->calibrate(
-                          detectorLUT->at(hit), energy->at(hit))
+                          detectorID->at(hit), energy->at(hit))
                     : GermaniumCalibration::Result{
                           static_cast<double>(energy->at(hit)),
                           GermaniumCalibration::Failure::None};
@@ -305,13 +285,13 @@ int RawAnalysis::run(const std::vector<std::string>& inputPatterns,
             if (!calibrated.valid()) {
                 rejectEvent = true;
                 if (calibrated.failure ==
-                    GermaniumCalibration::Failure::MissingLUT) {
-                    ++missingCalibrationEvents;
+                    GermaniumCalibration::Failure::MissingID) {
+                    ++missingCalibrationEvents_;
                 } else if (calibrated.failure ==
                            GermaniumCalibration::Failure::OutOfRange) {
-                    ++outOfRangeCalibrationEvents;
+                    ++outOfRangeCalibrationEvents_;
                 } else {
-                    ++nonFiniteCalibrationEvents;
+                    ++nonFiniteCalibrationEvents_;
                 }
                 break;
             }
@@ -319,7 +299,7 @@ int RawAnalysis::run(const std::vector<std::string>& inputPatterns,
             analysedEnergies[hit] = calibrated.energy;
             acceptedGermanium[hit] = true;
             gammaEnergies.push_back(calibrated.energy);
-            gammaLUTs.push_back(detectorLUT->at(hit));
+            gammaIDs.push_back(detectorID->at(hit));
         }
 
         if (rejectEvent) {
@@ -331,39 +311,38 @@ int RawAnalysis::run(const std::vector<std::string>& inputPatterns,
 
         std::vector<unsigned int> multiplicities(
             detectorHistograms_.size(), 0U);
-        std::vector<unsigned short> bgoLUTs;
-        bgoLUTs.reserve(hitCount);
+        std::vector<unsigned short> bgoIDs;
+        bgoIDs.reserve(hitCount);
         for (std::size_t hit = 0; hit < hitCount; ++hit) {
             if (detectorType->at(hit) == config::kBgoType) {
-                bgoLUTs.push_back(detectorLUT->at(hit));
+                bgoIDs.push_back(detectorID->at(hit));
             }
         }
         const DetectorMatchingStatistics::EventResult matchingResult =
-            detectorMatchingStatistics.record(gammaLUTs, bgoLUTs);
+            detectorMatchingStatistics_.record(gammaIDs, bgoIDs);
         const unsigned int germaniumMultiplicity =
-            static_cast<unsigned int>(gammaLUTs.size());
+            static_cast<unsigned int>(gammaIDs.size());
         const unsigned int bgoMultiplicity =
-            static_cast<unsigned int>(bgoLUTs.size());
-        const bool allBgoHitsMatched =
-            matchingResult.extraBgoMultiplicity == 0;
-        const bool foldValid = foldStatistics.record(
-            germaniumMultiplicity, bgoMultiplicity, allBgoHitsMatched);
+            static_cast<unsigned int>(bgoIDs.size());
+        const bool foldValid = foldStatistics_.record(
+            germaniumMultiplicity, bgoMultiplicity,
+            matchingResult.extraBgoMultiplicity == 0);
 
         std::vector<double> bgoVetoedGammaEnergies;
-        std::vector<unsigned short> bgoVetoedGammaLUTs;
-        bgoVetoedGammaEnergies.reserve(gammaLUTs.size());
-        bgoVetoedGammaLUTs.reserve(gammaLUTs.size());
+        std::vector<unsigned short> bgoVetoedGammaIDs;
+        bgoVetoedGammaEnergies.reserve(gammaIDs.size());
+        bgoVetoedGammaIDs.reserve(gammaIDs.size());
         unsigned int germaniumMultiplicityAfterBgoVeto = 0;
 
         for (std::size_t hit = 0; hit < hitCount; ++hit) {
             if (psd->at(hit) != 0) {
-                ++nonzeroPsdHits;
+                ++nonzeroPsdHits_;
             }
 
             const auto found = detectorIndex_.find(detectorType->at(hit));
             if (found == detectorIndex_.end()) {
-                ++unknownHits;
-                unknownDetectorTypes.Fill(detectorType->at(hit));
+                ++unknownHits_;
+                unknownDetectorTypes_->Fill(detectorType->at(hit));
                 continue;
             }
 
@@ -375,63 +354,201 @@ int RawAnalysis::run(const std::vector<std::string>& inputPatterns,
 
             const std::size_t detectorIndex = found->second;
             detectorHistograms_[detectorIndex].fillHit(
-                detectorLUT->at(hit), analysedEnergies[hit],
+                detectorID->at(hit), analysedEnergies[hit],
                 relativeTimesNs[hit]);
             if (isGermanium) {
                 individualGermaniumHistograms_.fill(
-                    detectorLUT->at(hit), analysedEnergies[hit]);
+                    detectorID->at(hit), analysedEnergies[hit]);
                 const bool survivesBgoVeto =
-                    inTimeBgoLUTs.count(detectorLUT->at(hit)) == 0;
-                gateStatistics.recordBgoVetoDecision(survivesBgoVeto);
+                    inTimeBgoIDs.count(detectorID->at(hit)) == 0;
+                gateStatistics_.recordBgoVetoDecision(survivesBgoVeto);
                 germaniumConditionHistograms_.fillHit(
-                    analysedEnergies[hit],
-                    static_cast<double>(*absoluteTime),
-                    survivesBgoVeto,
-                    siliconCoincident,
-                    foldValid);
+                    analysedEnergies[hit], static_cast<double>(*absoluteTime),
+                    survivesBgoVeto, siliconCoincident, foldValid);
                 if (survivesBgoVeto) {
                     ++germaniumMultiplicityAfterBgoVeto;
                     bgoVetoedGammaEnergies.push_back(analysedEnergies[hit]);
-                    bgoVetoedGammaLUTs.push_back(detectorLUT->at(hit));
+                    bgoVetoedGammaIDs.push_back(detectorID->at(hit));
                 }
             } else if (detectorType->at(hit) == config::kSiliconType) {
                 individualSiliconHistograms_.fill(
-                    detectorLUT->at(hit), analysedEnergies[hit]);
+                    detectorID->at(hit), analysedEnergies[hit]);
             } else if (detectorType->at(hit) == config::kBgoType) {
                 individualBgoHistograms_.fill(
-                    detectorLUT->at(hit), analysedEnergies[hit]);
+                    detectorID->at(hit), analysedEnergies[hit]);
             } else if (detectorType->at(hit) == config::kLabrType) {
                 individualLabrHistograms_.fill(
-                    detectorLUT->at(hit), analysedEnergies[hit]);
+                    detectorID->at(hit), analysedEnergies[hit]);
             }
             ++multiplicities[detectorIndex];
         }
 
         germaniumConditionHistograms_.fillEvent(
-            germaniumMultiplicityAfterBgoVeto,
-            siliconCoincident, foldValid);
+            germaniumMultiplicityAfterBgoVeto, siliconCoincident, foldValid);
         gammaCoincidences_.fillEvent(
             bgoVetoedGammaEnergies, siliconCoincident);
         if (siliconCoincident) {
             germaniumConditionHistograms_.fillBgoVetoedSiliconCoincidences(
                 bgoVetoedGammaEnergies);
             angularCoincidences_.fillEvent(
-                bgoVetoedGammaEnergies, bgoVetoedGammaLUTs);
+                bgoVetoedGammaEnergies, bgoVetoedGammaIDs);
         }
 
-        for (std::size_t index = 0; index < detectorHistograms_.size(); ++index) {
-            detectorHistograms_[index].fillMultiplicity(multiplicities[index]);
+        for (std::size_t index = 0;
+             index < detectorHistograms_.size(); ++index) {
+            detectorHistograms_[index].fillMultiplicity(
+                multiplicities[index]);
         }
-        eventMultiplicity.Fill(hitCount);
-        combinedStatistics.record(multiplicities);
+        eventMultiplicity_->Fill(hitCount);
+        combinedStatistics_.record(multiplicities);
 
-        if (processedEvents % 100000 == 0) {
-            std::cout << "Processed " << processedEvents << " events.\r"
+        if (showProgress && processedEvents_ % 100000 == 0) {
+            std::cout << "Processed " << processedEvents_ << " events.\r"
                       << std::flush;
         }
     }
+}
 
-    std::cout << "Processed " << processedEvents << " events.             \n";
+void RawAnalysis::merge(const RawAnalysis& other)
+{
+    if (detectorHistograms_.size() != other.detectorHistograms_.size()) {
+        throw std::logic_error("Cannot merge incompatible analysis states");
+    }
+    for (std::size_t index = 0;
+         index < detectorHistograms_.size(); ++index) {
+        detectorHistograms_[index].merge(other.detectorHistograms_[index]);
+    }
+    gammaCoincidences_.merge(other.gammaCoincidences_);
+    angularCoincidences_.merge(other.angularCoincidences_);
+    individualGermaniumHistograms_.merge(other.individualGermaniumHistograms_);
+    germaniumConditionHistograms_.merge(other.germaniumConditionHistograms_);
+    individualSiliconHistograms_.merge(other.individualSiliconHistograms_);
+    individualBgoHistograms_.merge(other.individualBgoHistograms_);
+    individualLabrHistograms_.merge(other.individualLabrHistograms_);
+    eventMultiplicity_->Add(other.eventMultiplicity_.get());
+    unknownDetectorTypes_->Add(other.unknownDetectorTypes_.get());
+    combinedStatistics_.merge(other.combinedStatistics_);
+    foldStatistics_.merge(other.foldStatistics_);
+    gateStatistics_.merge(other.gateStatistics_);
+    detectorMatchingStatistics_.merge(other.detectorMatchingStatistics_);
+    processedEvents_ += other.processedEvents_;
+    malformedEvents_ += other.malformedEvents_;
+    unknownHits_ += other.unknownHits_;
+    nonzeroPsdHits_ += other.nonzeroPsdHits_;
+    missingCalibrationEvents_ += other.missingCalibrationEvents_;
+    outOfRangeCalibrationEvents_ += other.outOfRangeCalibrationEvents_;
+    nonFiniteCalibrationEvents_ += other.nonFiniteCalibrationEvents_;
+    firstAbsoluteTime_ = std::min(firstAbsoluteTime_, other.firstAbsoluteTime_);
+    lastAbsoluteTime_ = std::max(lastAbsoluteTime_, other.lastAbsoluteTime_);
+}
+
+int RawAnalysis::run(const std::vector<std::string>& inputPatterns,
+                     const std::string& outputFileName)
+{
+    const auto totalStart = std::chrono::steady_clock::now();
+
+    TChain chain(config::kTreeName);
+    for (const auto& pattern : inputPatterns) {
+        if (chain.Add(pattern.c_str()) == 0) {
+            std::cerr << "Warning: no file matched '" << pattern << "'.\n";
+        }
+    }
+    if (chain.GetNtrees() == 0) {
+        std::cerr << "Error: no input trees called '" << config::kTreeName
+                  << "' were added.\n";
+        return 2;
+    }
+
+    std::vector<std::string> inputFiles;
+    TObjArray* fileElements = chain.GetListOfFiles();
+    inputFiles.reserve(static_cast<std::size_t>(fileElements->GetEntries()));
+    for (int index = 0; index < fileElements->GetEntries(); ++index) {
+        const auto* element =
+            dynamic_cast<const TChainElement*>(fileElements->At(index));
+        if (element != nullptr) {
+            inputFiles.emplace_back(element->GetTitle());
+        }
+    }
+
+    std::cout << "Reading " << chain.GetNtrees() << " file(s), "
+              << chain.GetEntries() << " events.\n";
+
+    if (!calibrationManager_.empty()) {
+        configureCalibratedAxes();
+        std::cout << "Germanium calibration is enabled"
+                  << (calibrationManager_.usesRunRanges()
+                          ? " with run-dependent ranges.\n"
+                          : ".\n");
+        if (calibrationManager_.usesRunRanges()) {
+            try {
+                for (const std::string& fileName : inputFiles) {
+                    const unsigned int run =
+                        RunCalibrationManager::runNumberFromFileName(fileName);
+                    calibrationManager_.calibrationForRun(run);
+                }
+            } catch (const std::exception& error) {
+                std::cerr << "Calibration selection error: "
+                          << error.what() << "\n";
+                return 5;
+            }
+        }
+    }
+
+    const auto processingStart = std::chrono::steady_clock::now();
+    try {
+        if (threadCount_ == 1) {
+            TTreeReader reader(&chain);
+            processReader(reader);
+        } else {
+            std::cout << "Processing with " << threadCount_
+                      << " worker threads.\n";
+            ROOT::EnableImplicitMT(threadCount_);
+            ROOT::TTreeProcessorMT processor(chain, threadCount_);
+            std::mutex workerMutex;
+            std::unordered_map<std::thread::id, RawAnalysis*> workerByThread;
+            std::vector<std::unique_ptr<RawAnalysis>> workers;
+
+            processor.Process([&](TTreeReader& reader) {
+                RawAnalysis* worker = nullptr;
+                {
+                    std::lock_guard<std::mutex> lock(workerMutex);
+                    const std::thread::id id = std::this_thread::get_id();
+                    const auto existing = workerByThread.find(id);
+                    if (existing != workerByThread.end()) {
+                        worker = existing->second;
+                    } else {
+                        auto state = std::make_unique<RawAnalysis>();
+                        state->diagnosticsEnabled_ = false;
+                        state->excludedGermaniumIDs_ = excludedGermaniumIDs_;
+                        state->calibrationManager_ = calibrationManager_;
+                        if (!calibrationManager_.empty()) {
+                            state->configureCalibratedAxes();
+                        }
+                        worker = state.get();
+                        workers.push_back(std::move(state));
+                        workerByThread.emplace(id, worker);
+                    }
+                }
+                worker->processReader(reader, false);
+            });
+
+            for (const auto& worker : workers) {
+                merge(*worker);
+            }
+            ROOT::DisableImplicitMT();
+        }
+    } catch (const std::exception& error) {
+        if (ROOT::IsImplicitMTEnabled()) {
+            ROOT::DisableImplicitMT();
+        }
+        std::cerr << "Analysis error: " << error.what() << "\n";
+        return 5;
+    }
+    const double processingSeconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - processingStart).count();
+
+    std::cout << "Processed " << processedEvents_
+              << " events.             \n";
 
     TFile outputFile(outputFileName.c_str(), "RECREATE");
     if (outputFile.IsZombie()) {
@@ -440,8 +557,8 @@ int RawAnalysis::run(const std::vector<std::string>& inputPatterns,
     }
 
     outputFile.cd();
-    eventMultiplicity.Write();
-    unknownDetectorTypes.Write();
+    eventMultiplicity_->Write();
+    unknownDetectorTypes_->Write();
     std::unordered_map<unsigned short, TDirectory*> detectorDirectories;
     for (const auto& histograms : detectorHistograms_) {
         detectorDirectories.emplace(
@@ -450,8 +567,7 @@ int RawAnalysis::run(const std::vector<std::string>& inputPatterns,
 
     TDirectory* germaniumDirectory =
         detectorDirectories.at(config::kGermaniumType);
-    TDirectory* siliconDirectory =
-        detectorDirectories.at(config::kSiliconType);
+    TDirectory* siliconDirectory = detectorDirectories.at(config::kSiliconType);
     TDirectory* bgoDirectory = detectorDirectories.at(config::kBgoType);
     TDirectory* labrDirectory = detectorDirectories.at(config::kLabrType);
     TDirectory* germaniumEnergyDirectory =
@@ -488,28 +604,38 @@ int RawAnalysis::run(const std::vector<std::string>& inputPatterns,
     outputFile.Close();
 
     std::cout << "Wrote histograms to " << outputFileName << ".\n";
-    if (!diagnosticsEnabled_) {
-        return 0;
+    if (diagnosticsEnabled_) {
+        std::cout << "Malformed events skipped: " << malformedEvents_ << "\n"
+                  << "Hits with unknown detectorType: " << unknownHits_ << "\n"
+                  << "Hits with non-zero psd: " << nonzeroPsdHits_ << "\n"
+                  << "Events rejected for missing Ge calibration: "
+                  << missingCalibrationEvents_ << "\n"
+                  << "Events rejected outside Ge calibration range: "
+                  << outOfRangeCalibrationEvents_ << "\n"
+                  << "Events rejected for non-finite Ge calibration: "
+                  << nonFiniteCalibrationEvents_ << "\n";
+        if (processedEvents_ > malformedEvents_) {
+            std::cout << "Raw absoluteTime range: " << firstAbsoluteTime_
+                      << " to " << lastAbsoluteTime_ << "\n";
+        }
+        combinedStatistics_.print(std::cout, "combined accepted events");
+        foldStatistics_.print(std::cout);
+        detectorMatchingStatistics_.print(std::cout);
+        gateStatistics_.print(std::cout);
     }
 
-    std::cout << "Malformed events skipped: " << malformedEvents << "\n"
-              << "Hits with unknown detectorType: " << unknownHits << "\n"
-              << "Hits with non-zero psd: " << nonzeroPsdHits << "\n"
-              << "Events rejected for missing Ge calibration: "
-              << missingCalibrationEvents << "\n"
-              << "Events rejected outside Ge calibration range: "
-              << outOfRangeCalibrationEvents << "\n"
-              << "Events rejected for non-finite Ge calibration: "
-              << nonFiniteCalibrationEvents << "\n";
-    if (processedEvents > malformedEvents) {
-        std::cout << "Raw absoluteTime range: " << firstAbsoluteTime
-                  << " to " << lastAbsoluteTime << "\n";
-    }
-
-    combinedStatistics.print(std::cout, "combined accepted events");
-    foldStatistics.print(std::cout);
-    detectorMatchingStatistics.print(std::cout);
-    gateStatistics.print(std::cout);
-
+    const double totalSeconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - totalStart).count();
+    const double processingRate = processingSeconds > 0.0
+        ? static_cast<double>(processedEvents_) / processingSeconds : 0.0;
+    const double totalRate = totalSeconds > 0.0
+        ? static_cast<double>(processedEvents_) / totalSeconds : 0.0;
+    std::cout << "\n=== Analysis timing ===\n"
+              << "Event processing: " << formatElapsed(processingSeconds)
+              << " (" << std::fixed << std::setprecision(0)
+              << processingRate << " events/s)\n"
+              << "Total analysis:   " << formatElapsed(totalSeconds)
+              << " (" << totalRate << " events/s including setup, merge, "
+              << "output, and diagnostics)\n";
     return 0;
 }

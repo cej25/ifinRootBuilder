@@ -20,11 +20,12 @@ public:
         const GermaniumDetectorHistograms&) = delete;
 
     void setCalibratedEnergyAxes();
-    void fill(UShort_t detectorLUT, double energy);
+    void fill(UShort_t detectorID, double energy);
+    void merge(const GermaniumDetectorHistograms& other);
     void write(TDirectory& germaniumEnergyDirectory) const;
 
 private:
-    TH1D& spectrumFor(UShort_t detectorLUT);
+    TH1D& spectrumFor(UShort_t detectorID);
 
     bool calibrated_ = false;
     std::map<UShort_t, std::unique_ptr<TH1D>> spectra_;

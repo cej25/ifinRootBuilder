@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-find_package(ROOT REQUIRED COMPONENTS Core RIO Tree TreePlayer Hist Graf Gpad)
+find_package(ROOT REQUIRED COMPONENTS Core RIO Tree TreePlayer Hist Graf Gpad Imt)
 
 add_executable(analyse_raw
     analyse_raw.cpp
@@ -31,6 +31,7 @@ target_link_libraries(analyse_raw PRIVATE
     ROOT::Hist
     ROOT::Graf
     ROOT::Gpad
+    ROOT::Imt
 )
 
 target_compile_options(analyse_raw PRIVATE
