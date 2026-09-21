@@ -57,6 +57,30 @@ void GateStatistics::recordBgoVetoDecision(bool survivesVeto)
     germaniumVetoSurvivors_ += survivesVeto;
 }
 
+void GateStatistics::recordGermaniumCounts(
+    std::uint64_t total, std::uint64_t timingPass)
+{
+    germaniumHits_ += total;
+    germaniumTimingPass_ += timingPass;
+}
+
+void GateStatistics::recordBgoCounts(
+    std::uint64_t total, std::uint64_t timingPass)
+{
+    bgoHits_ += total;
+    bgoTimingPass_ += timingPass;
+}
+
+void GateStatistics::recordSiliconCounts(
+    std::uint64_t total, std::uint64_t timingPass,
+    std::uint64_t energyPass, std::uint64_t combinedPass)
+{
+    siliconHits_ += total;
+    siliconTimingPass_ += timingPass;
+    siliconEnergyPass_ += energyPass;
+    siliconCombinedPass_ += combinedPass;
+}
+
 void GateStatistics::merge(const GateStatistics& other)
 {
     germaniumHits_ += other.germaniumHits_;

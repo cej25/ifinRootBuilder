@@ -1,6 +1,7 @@
 #include "RawAnalysis.h"
 
 #include "AnalysisConfig.h"
+#include "ProgressReporter.h"
 
 #include <ROOT/TTreeProcessorMT.hxx>
 #include <RtypesCore.h>
@@ -124,6 +125,11 @@ void RawAnalysis::setDiagnosticsEnabled(bool enabled)
     diagnosticsEnabled_ = enabled;
 }
 
+void RawAnalysis::setProgressEnabled(bool enabled)
+{
+    progressEnabled_ = enabled;
+}
+
 void RawAnalysis::setThreadCount(unsigned int threadCount)
 {
     if (threadCount == 0) {
@@ -154,7 +160,8 @@ void RawAnalysis::configureCalibratedAxes()
     germaniumConditionHistograms_.setCalibratedEnergyAxes();
 }
 
-void RawAnalysis::processReader(TTreeReader& reader, bool showProgress)
+void RawAnalysis::processReader(TTreeReader& reader,
+                                ProgressReporter* progressReporter)
 {
     TTreeReaderValue<std::vector<UShort_t>> detectorID(
         reader, config::kDetectorIDBranch);
@@ -177,8 +184,16 @@ void RawAnalysis::processReader(TTreeReader& reader, bool showProgress)
         activeCalibration = calibrationManager_.calibrationForRun(0);
     }
 
+    constexpr std::uint64_t kProgressBatchSize = 10000;
+    std::uint64_t pendingProgress = 0;
     while (reader.Next()) {
         ++processedEvents_;
+        ++pendingProgress;
+        if (progressReporter != nullptr &&
+            pendingProgress >= kProgressBatchSize) {
+            progressReporter->add(pendingProgress);
+            pendingProgress = 0;
+        }
         if (calibrationManager_.usesRunRanges()) {
             TTree* tree = reader.GetTree();
             TFile* inputFile = tree != nullptr ? tree->GetCurrentFile() : nullptr;
@@ -401,11 +416,8 @@ void RawAnalysis::processReader(TTreeReader& reader, bool showProgress)
         eventMultiplicity_->Fill(hitCount);
         combinedStatistics_.record(multiplicities);
 
-        if (showProgress && processedEvents_ % 100000 == 0) {
-            std::cout << "Processed " << processedEvents_ << " events.\r"
-                      << std::flush;
-        }
     }
+    if (progressReporter != nullptr) progressReporter->add(pendingProgress);
 }
 
 void RawAnalysis::merge(const RawAnalysis& other)
@@ -494,10 +506,12 @@ int RawAnalysis::run(const std::vector<std::string>& inputPatterns,
     }
 
     const auto processingStart = std::chrono::steady_clock::now();
+    ProgressReporter progressReporter(
+        static_cast<std::uint64_t>(chain.GetEntries()), progressEnabled_);
     try {
         if (threadCount_ == 1) {
             TTreeReader reader(&chain);
-            processReader(reader);
+            processReader(reader, &progressReporter);
         } else {
             std::cout << "Processing with " << threadCount_
                       << " worker threads.\n";
@@ -527,7 +541,7 @@ int RawAnalysis::run(const std::vector<std::string>& inputPatterns,
                         workerByThread.emplace(id, worker);
                     }
                 }
-                worker->processReader(reader, false);
+                worker->processReader(reader, &progressReporter);
             });
 
             for (const auto& worker : workers) {
@@ -538,6 +552,7 @@ int RawAnalysis::run(const std::vector<std::string>& inputPatterns,
         std::cerr << "Analysis error: " << error.what() << "\n";
         return 5;
     }
+    progressReporter.finish();
     const double processingSeconds = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - processingStart).count();
 

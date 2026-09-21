@@ -21,6 +21,7 @@ void printUsage(const char* program)
         << "[--run-cal first last file.cal] "
         << "[--run-mcal first last file.mcal] "
         << "[--diagnostics|--no-diagnostics] "
+        << "[--progress|--no-progress] "
         << "[--threads N] "
         << "[--exclude-ge ID[,ID...]] "
         << "input1.root [input2.root ...]\n\n"
@@ -97,6 +98,8 @@ int main(int argc, char** argv)
             const std::string value = argv[argument];
             if (value == "--diagnostics" || value == "--no-diagnostics") {
                 analysis.setDiagnosticsEnabled(value == "--diagnostics");
+            } else if (value == "--progress" || value == "--no-progress") {
+                analysis.setProgressEnabled(value == "--progress");
             } else if (value == "--threads") {
                 if (argument + 1 >= argc) {
                     std::cerr << "Error: --threads requires a positive integer.\n";

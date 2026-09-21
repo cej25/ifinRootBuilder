@@ -19,9 +19,11 @@ cmake -S . -B build
 cmake --build build -j
 ```
 
-The executable is then:
+The executables are:
 
 ```text
+build/build_analysis_tree
+build/analyse_tree
 build/analyse_raw
 ```
 
@@ -35,6 +37,66 @@ cmake --build build -j
 
 ## Usage
 
+### Recommended two-stage analysis
+
+Stage one reads each raw file, applies germanium calibration and the configured
+timing, BGO-veto, silicon, exclusion, multiplicity, and FoldValid logic, then
+writes one compact analysis tree per input run:
+
+```bash
+mkdir -p analysed
+build/build_analysis_tree analysed \
+    --run-cal 294 294 calibrations/152Eu.cal \
+    --run-mcal 294 294 calibrations/pint_run_1-10.mcal \
+    --threads 8 \
+    Run_9um_000294.root
+```
+
+This creates:
+
+```text
+analysed/Run_9um_000294_analysis.root
+```
+
+`build_analysis_tree --threads N` processes up to `N` different input files at
+once. A single input file therefore uses one file worker; the parallelism is
+intended for a multi-run batch. Each output retains its event structure and
+stores calibrated Ge energies, separated detector-hit vectors, relative times,
+multiplicities, BGO-veto flags, the silicon condition, and FoldValid.
+
+Stage two reads any number of analysis trees and constructs the usual
+histograms:
+
+```bash
+build/analyse_tree spectra.root \
+    --threads 8 \
+    --no-diagnostics \
+    analysed/Run_9um_*_analysis.root
+```
+
+Stage two uses within-tree multithreading. Calibration and Ge exclusions belong
+to stage one and are therefore not accepted by `analyse_tree`. Analysis-tree
+files made with different timing/gate/exclusion configurations, or a mixture of
+calibrated and uncalibrated files, are rejected rather than silently combined.
+
+To process a larger run range:
+
+```bash
+build/build_analysis_tree analysed \
+    --run-cal 294 350 calibrations/coarse.cal \
+    --run-mcal 294 350 calibrations/fine.mcal \
+    --threads 24 \
+    Run_9um_*.root
+
+build/analyse_tree spectra.root --threads 24 \
+    analysed/Run_9um_*_analysis.root
+```
+
+### Direct raw analysis
+
+The original single-stage analyser remains available for validation and for
+small one-off jobs:
+
 The general command is:
 
 ```bash
@@ -46,6 +108,17 @@ Shell wildcards can be used for multiple input files:
 ```bash
 build/analyse_raw analysis.root Run_30um_*.root
 ```
+
+To validate the two-stage result against a direct result made with the same
+calibration and conditions:
+
+```bash
+root -l -b -q \
+    'compare_histograms.C("direct.root","two_stage.root")'
+```
+
+The comparison walks all histogram directories and reports any bin-content or
+bin-error differences. Presentation canvases are intentionally skipped.
 
 ### Multiple CPU cores
 
@@ -64,6 +137,18 @@ needed for one histogram set per active worker can limit useful scaling.
 Every successful run prints both the event-processing time and the total
 analysis time, together with the corresponding event rates. This makes, for
 example, `--threads 1` and `--threads 8` runs directly comparable.
+
+During event processing, `analyse_raw` and `analyse_tree` display the number
+of processed and total events, percentage complete, average event rate,
+elapsed time, and estimated time remaining. Progress output is enabled by
+default for both serial and threaded runs. Disable it when desired with:
+
+```bash
+build/analyse_raw analysis.root --no-progress Run_30um_*.root
+```
+
+Use `--progress` to explicitly re-enable it. If both switches are given, the
+last one on the command line takes effect.
 
 ### Calibration
 

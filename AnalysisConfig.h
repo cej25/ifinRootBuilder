@@ -6,6 +6,8 @@
 namespace config {
 
 inline constexpr const char* kTreeName = "events";
+inline constexpr const char* kAnalysisTreeName = "analysis";
+inline constexpr unsigned int kAnalysisTreeSchemaVersion = 1;
 
 // The stored branch retains its historical name; analysis terminology uses ID.
 inline constexpr const char* kDetectorIDBranch   = "detectorLUT";

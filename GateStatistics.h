@@ -11,6 +11,14 @@ public:
     void recordSilicon(bool passesTiming, bool passesEnergy);
     void recordEvent(bool hasSiliconCoincidence);
     void recordBgoVetoDecision(bool survivesVeto);
+    void recordGermaniumCounts(std::uint64_t total,
+                               std::uint64_t timingPass);
+    void recordBgoCounts(std::uint64_t total,
+                         std::uint64_t timingPass);
+    void recordSiliconCounts(std::uint64_t total,
+                             std::uint64_t timingPass,
+                             std::uint64_t energyPass,
+                             std::uint64_t combinedPass);
     void merge(const GateStatistics& other);
 
     void print(std::ostream& output) const;

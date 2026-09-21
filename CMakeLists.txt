@@ -6,24 +6,44 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(ROOT REQUIRED COMPONENTS Core RIO Tree TreePlayer Hist Graf Gpad Imt)
+find_package(Threads REQUIRED)
 
-add_executable(analyse_raw
-    analyse_raw.cpp
+set(HISTOGRAM_SOURCES
     AngularCoincidenceHistograms.cpp
-    RawAnalysis.cpp
     DetectorMatchingStatistics.cpp
     DetectorHistograms.cpp
     FoldStatistics.cpp
     GammaCoincidenceHistograms.cpp
-    GermaniumCalibration.cpp
     GermaniumConditionHistograms.cpp
     GermaniumDetectorHistograms.cpp
     GateStatistics.cpp
     IndividualDetectorHistograms.cpp
     MultiplicityStatistics.cpp
+    ProgressReporter.cpp
+)
+
+add_executable(analyse_raw
+    analyse_raw.cpp
+    RawAnalysis.cpp
+    GermaniumCalibration.cpp
+    RunCalibrationManager.cpp
+    ${HISTOGRAM_SOURCES}
+)
+
+add_executable(build_analysis_tree
+    build_analysis_tree.cpp
+    AnalysisTreeBuilder.cpp
+    GermaniumCalibration.cpp
     RunCalibrationManager.cpp
 )
-target_link_libraries(analyse_raw PRIVATE
+
+add_executable(analyse_tree
+    analyse_tree.cpp
+    AnalysisTreeAnalysis.cpp
+    ${HISTOGRAM_SOURCES}
+)
+
+set(ROOT_ANALYSIS_LIBRARIES
     ROOT::Core
     ROOT::RIO
     ROOT::Tree
@@ -32,8 +52,12 @@ target_link_libraries(analyse_raw PRIVATE
     ROOT::Graf
     ROOT::Gpad
     ROOT::Imt
+    Threads::Threads
 )
 
-target_compile_options(analyse_raw PRIVATE
-    $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic>
-)
+foreach(target analyse_raw build_analysis_tree analyse_tree)
+    target_link_libraries(${target} PRIVATE ${ROOT_ANALYSIS_LIBRARIES})
+    target_compile_options(${target} PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic>
+    )
+endforeach()
