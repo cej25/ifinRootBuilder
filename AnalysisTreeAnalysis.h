@@ -11,6 +11,7 @@
 #include "GermaniumDetectorHistograms.h"
 #include "IndividualDetectorHistograms.h"
 #include "MultiplicityStatistics.h"
+#include "RunningTimeMap.h"
 
 #include <RtypesCore.h>
 
@@ -59,6 +60,7 @@ private:
     FoldStatistics foldStatistics_;
     GateStatistics gateStatistics_;
     DetectorMatchingStatistics detectorMatchingStatistics_;
+    RunningTimeMap runningTimeMap_;
     ULong64_t processedEvents_ = 0;
     ULong64_t malformedEvents_ = 0;
     ULong64_t unknownHits_ = 0;

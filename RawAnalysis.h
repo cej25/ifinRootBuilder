@@ -13,6 +13,7 @@
 #include "GateStatistics.h"
 #include "MultiplicityStatistics.h"
 #include "RunCalibrationManager.h"
+#include "RunningTimeMap.h"
 
 #include <RtypesCore.h>
 
@@ -58,6 +59,7 @@ private:
     GammaCoincidenceHistograms gammaCoincidences_;
     AngularCoincidenceHistograms angularCoincidences_;
     RunCalibrationManager calibrationManager_;
+    RunningTimeMap runningTimeMap_;
     GermaniumDetectorHistograms individualGermaniumHistograms_;
     GermaniumConditionHistograms germaniumConditionHistograms_;
     IndividualDetectorHistograms individualSiliconHistograms_;

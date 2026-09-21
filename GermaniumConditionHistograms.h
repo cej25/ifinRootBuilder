@@ -18,7 +18,8 @@ public:
         const GermaniumConditionHistograms&) = delete;
 
     void setCalibratedEnergyAxes();
-    void fillHit(double energy, double absoluteTimeSeconds,
+    void setRunningTimeRange(double totalRunningTimeSeconds);
+    void fillHit(double energy, double runningTimeSeconds,
                  bool survivesBgoVeto, bool siliconCoincident,
                  bool foldValid);
     void fillUnconditionedCoincidences(
@@ -42,6 +43,8 @@ private:
     std::unique_ptr<TH1D> foldValidEnergy_;
     std::unique_ptr<TH1D> foldInclusiveEnergy_;
     std::unique_ptr<TH2I> energyVsTime_;
+    bool calibrated_ = false;
+    double runningTimeMaxSeconds_ = 1.0;
 };
 
 #endif

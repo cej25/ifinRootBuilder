@@ -11,6 +11,7 @@
 #include <TH1D.h>
 #include <TNamed.h>
 #include <TObjArray.h>
+#include <TTree.h>
 #include <TTreeReader.h>
 #include <TTreeReaderValue.h>
 
@@ -123,6 +124,8 @@ void AnalysisTreeAnalysis::processReader(
     TTreeReaderValue<UInt_t> nonzeroPsdHits(reader, "nonzeroPsdHits");
     TTreeReaderValue<std::vector<UShort_t>> geID(reader, "geID");
     TTreeReaderValue<std::vector<Double_t>> geEnergy(reader, "geEnergy");
+    TTreeReaderValue<std::vector<UShort_t>> geRawEnergy(
+        reader, "geRawEnergy");
     TTreeReaderValue<std::vector<Float_t>> geTime(reader, "geTime");
     TTreeReaderValue<std::vector<UChar_t>> geSurvivesBgoVeto(
         reader, "geSurvivesBgoVeto");
@@ -140,6 +143,8 @@ void AnalysisTreeAnalysis::processReader(
 
     constexpr std::uint64_t kProgressBatchSize = 10000;
     std::uint64_t pendingProgress = 0;
+    TFile* activeInputFile = nullptr;
+    const RunningTimeMap::FileRange* activeTimeRange = nullptr;
     while (reader.Next()) {
         ++processedEvents_;
         ++pendingProgress;
@@ -148,8 +153,23 @@ void AnalysisTreeAnalysis::processReader(
             progressReporter->add(pendingProgress);
             pendingProgress = 0;
         }
+        TTree* tree = reader.GetTree();
+        TFile* inputFile = tree != nullptr ? tree->GetCurrentFile() : nullptr;
+        if (inputFile == nullptr) {
+            throw std::runtime_error(
+                "TTreeReader did not provide the current analysis filename");
+        }
+        if (inputFile != activeInputFile) {
+            activeInputFile = inputFile;
+            activeTimeRange = &runningTimeMap_.rangeForFile(
+                inputFile->GetName());
+        }
+        const double runningTimeSeconds = RunningTimeMap::runningTimeSeconds(
+            *activeTimeRange, *absoluteTime);
+
         const bool sizesAgree =
             geID->size() == geEnergy->size() &&
+            geID->size() == geRawEnergy->size() &&
             geID->size() == geTime->size() &&
             geID->size() == geSurvivesBgoVeto->size() &&
             bgoID->size() == bgoEnergy->size() &&
@@ -218,11 +238,13 @@ void AnalysisTreeAnalysis::processReader(
             allGammaEnergies.push_back(energy);
             detectorHistograms_[detectorIndex_.at(config::kGermaniumType)]
                 .fillHit(geID->at(hit), energy, geTime->at(hit));
-            individualGermaniumHistograms_.fill(geID->at(hit), energy);
+            individualGermaniumHistograms_.fill(
+                geID->at(hit), energy, geRawEnergy->at(hit),
+                runningTimeSeconds);
             const bool survives = geSurvivesBgoVeto->at(hit) != 0;
             gateStatistics_.recordBgoVetoDecision(survives);
             germaniumConditionHistograms_.fillHit(
-                energy, static_cast<double>(*absoluteTime), survives,
+                energy, runningTimeSeconds, survives,
                 *siliconCoincident, foldValid);
             if (survives) {
                 vetoedGammaEnergies.push_back(energy);
@@ -330,7 +352,7 @@ int AnalysisTreeAnalysis::writeOutput(const std::string& outputFileName)
         return 4;
     }
     germaniumConditionHistograms_.write(*ge, *geEnergy, *geTime);
-    individualGermaniumHistograms_.write(*geEnergy);
+    individualGermaniumHistograms_.write(*geEnergy, *geTime);
     individualSiliconHistograms_.write(*siEnergy);
     individualBgoHistograms_.write(*bgoEnergy);
     individualLabrHistograms_.write(*labrEnergy);
@@ -351,6 +373,7 @@ void AnalysisTreeAnalysis::printDiagnostics() const
         std::cout << "Raw absoluteTime range: " << firstAbsoluteTime_
                   << " to " << lastAbsoluteTime_ << "\n";
     }
+    runningTimeMap_.print(std::cout);
     combinedStatistics_.print(std::cout, "combined analysis-tree events");
     foldStatistics_.print(std::cout);
     detectorMatchingStatistics_.print(std::cout);
@@ -374,29 +397,64 @@ int AnalysisTreeAnalysis::run(
     }
     std::string expectedConfiguration;
     TObjArray* fileElements = chain.GetListOfFiles();
-    for (int index = 0; index < fileElements->GetEntries(); ++index) {
-        const auto* element =
-            dynamic_cast<const TChainElement*>(fileElements->At(index));
-        if (element == nullptr) continue;
-        TFile inputFile(element->GetTitle(), "READ");
-        TNamed* configuration = nullptr;
-        inputFile.GetObject("AnalysisConfiguration", configuration);
-        if (configuration == nullptr) {
-            std::cerr << "Error: '" << element->GetTitle()
-                      << "' has no AnalysisConfiguration metadata.\n";
-            return 2;
+    try {
+        for (int index = 0; index < fileElements->GetEntries(); ++index) {
+            const auto* element =
+                dynamic_cast<const TChainElement*>(fileElements->At(index));
+            if (element == nullptr) continue;
+            TFile inputFile(element->GetTitle(), "READ");
+            TNamed* schemaVersion = nullptr;
+            inputFile.GetObject("AnalysisTreeSchemaVersion", schemaVersion);
+            if (schemaVersion == nullptr ||
+                std::stoul(schemaVersion->GetTitle()) !=
+                    config::kAnalysisTreeSchemaVersion) {
+                std::cerr << "Error: '" << element->GetTitle()
+                          << "' uses an unsupported analysis-tree schema; "
+                          << "rebuild it with build_analysis_tree.\n";
+                return 2;
+            }
+            TNamed* configuration = nullptr;
+            inputFile.GetObject("AnalysisConfiguration", configuration);
+            if (configuration == nullptr) {
+                std::cerr << "Error: '" << element->GetTitle()
+                          << "' has no AnalysisConfiguration metadata.\n";
+                return 2;
+            }
+            const std::string value = configuration->GetTitle();
+            if (expectedConfiguration.empty()) {
+                expectedConfiguration = value;
+            } else if (value != expectedConfiguration) {
+                std::cerr << "Error: analysis-tree files were built with "
+                          << "different gate/exclusion configurations.\n";
+                return 2;
+            }
+            TNamed* firstTime = nullptr;
+            TNamed* lastTime = nullptr;
+            inputFile.GetObject("RawAbsoluteTimeFirst", firstTime);
+            inputFile.GetObject("RawAbsoluteTimeLast", lastTime);
+            if (firstTime == nullptr || lastTime == nullptr) {
+                std::cerr << "Error: '" << element->GetTitle()
+                          << "' has no per-file absolute-time metadata; rebuild "
+                          << "it with build_analysis_tree.\n";
+                return 2;
+            }
+            runningTimeMap_.addFile(
+                element->GetTitle(), std::stoull(firstTime->GetTitle()),
+                std::stoull(lastTime->GetTitle()));
         }
-        const std::string value = configuration->GetTitle();
-        if (expectedConfiguration.empty()) {
-            expectedConfiguration = value;
-        } else if (value != expectedConfiguration) {
-            std::cerr << "Error: analysis-tree files were built with "
-                      << "different gate/exclusion configurations.\n";
-            return 2;
-        }
+    } catch (const std::exception& error) {
+        std::cerr << "Error reading analysis-tree metadata: "
+                  << error.what() << "\n";
+        return 2;
     }
+    germaniumConditionHistograms_.setRunningTimeRange(
+        runningTimeMap_.totalSeconds());
+    individualGermaniumHistograms_.setRunningTimeRange(
+        runningTimeMap_.totalSeconds());
     std::cout << "Reading " << chain.GetNtrees() << " analysis file(s), "
               << chain.GetEntries() << " events.\n";
+    std::cout << "Total running time from " << runningTimeMap_.fileCount()
+              << " file(s): " << runningTimeMap_.totalSeconds() << " s.\n";
 
     const auto processingStart = std::chrono::steady_clock::now();
     ProgressReporter progressReporter(
@@ -423,6 +481,11 @@ int AnalysisTreeAnalysis::run(
                     } else {
                         auto state = std::make_unique<AnalysisTreeAnalysis>();
                         state->diagnosticsEnabled_ = false;
+                        state->runningTimeMap_ = runningTimeMap_;
+                        state->germaniumConditionHistograms_
+                            .setRunningTimeRange(runningTimeMap_.totalSeconds());
+                        state->individualGermaniumHistograms_
+                            .setRunningTimeRange(runningTimeMap_.totalSeconds());
                         worker = state.get();
                         workers.push_back(std::move(state));
                         byThread.emplace(id, worker);

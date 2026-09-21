@@ -20,6 +20,7 @@ set(HISTOGRAM_SOURCES
     IndividualDetectorHistograms.cpp
     MultiplicityStatistics.cpp
     ProgressReporter.cpp
+    RunningTimeMap.cpp
 )
 
 add_executable(analyse_raw

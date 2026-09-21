@@ -7,7 +7,7 @@ namespace config {
 
 inline constexpr const char* kTreeName = "events";
 inline constexpr const char* kAnalysisTreeName = "analysis";
-inline constexpr unsigned int kAnalysisTreeSchemaVersion = 1;
+inline constexpr unsigned int kAnalysisTreeSchemaVersion = 2;
 
 // The stored branch retains its historical name; analysis terminology uses ID.
 inline constexpr const char* kDetectorIDBranch   = "detectorLUT";
@@ -53,6 +53,13 @@ inline constexpr double kGermaniumSpectrumMin  = 0.0;
 inline constexpr double kGermaniumSpectrumMax  = 4096.0;
 inline constexpr int    kGermaniumIdBins      = 25;
 
+inline constexpr int    kIndividualGermaniumCalibratedBins = 2048;
+inline constexpr double kIndividualGermaniumCalibratedMin  = 0.0;
+inline constexpr double kIndividualGermaniumCalibratedMax  = 2048.0;
+inline constexpr int    kIndividualGermaniumRawBins = 16384;
+inline constexpr double kIndividualGermaniumRawMin  = 0.0;
+inline constexpr double kIndividualGermaniumRawMax  = 16384.0;
+
 inline constexpr int    kGammaBins = 2048;
 inline constexpr double kGammaMin  = 0.0;
 inline constexpr double kGammaMax  = 2048.0;
@@ -69,11 +76,10 @@ inline constexpr double kGammaSidebandScale =
     ((kGammaLowerSidebandMaxExclusive - kGammaLowerSidebandMin) +
      (kGammaUpperSidebandMaxExclusive - kGammaUpperSidebandMin));
 
-// absoluteTime is currently interpreted as seconds. Values outside this range
-// remain visible in the underflow/overflow bins and can be adjusted here.
+// absoluteTime is interpreted as seconds. The running-time x-axis is set at
+// runtime to the sum of the per-file durations while keeping a fixed number
+// of bins, so large multi-run datasets do not create enormous histograms.
 inline constexpr int    kDriftTimeBins = 600;
-inline constexpr double kDriftTimeMinSeconds = 0.0;
-inline constexpr double kDriftTimeMaxSeconds = 600.0;
 inline constexpr int    kDriftEnergyBins = 2048;
 inline constexpr double kDriftEnergyMin = 0.0;
 inline constexpr double kDriftEnergyMax = 2048.0;

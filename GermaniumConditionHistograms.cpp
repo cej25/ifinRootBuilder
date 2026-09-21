@@ -10,6 +10,7 @@
 #include <TLegend.h>
 
 #include <algorithm>
+#include <cmath>
 #include <stdexcept>
 
 namespace {
@@ -89,20 +90,33 @@ GermaniumConditionHistograms::GermaniumConditionHistograms()
         "h1_Ge_Si_gg_proj",
         "Projection of symmetrised Ge-Ge matrix after BGO veto with silicon condition;Energy [raw units];Counts");
 
+    setRunningTimeRange(1.0);
+}
+
+void GermaniumConditionHistograms::setRunningTimeRange(
+    double totalRunningTimeSeconds)
+{
+    if (!std::isfinite(totalRunningTimeSeconds) ||
+        totalRunningTimeSeconds < 0.0) {
+        throw std::invalid_argument("Invalid total running-time range");
+    }
+    runningTimeMaxSeconds_ = std::max(1.0, totalRunningTimeSeconds + 1.0);
     energyVsTime_ = std::make_unique<TH2I>(
         "h2_Ge_noVeto_EvTime",
-        "Germanium energy versus absolute time;absoluteTime [s];Energy [raw units]",
-        config::kDriftTimeBins, config::kDriftTimeMinSeconds,
-        config::kDriftTimeMaxSeconds, config::kDriftEnergyBins,
+        "Germanium energy versus total running time;Total running time [s];Energy [raw units]",
+        config::kDriftTimeBins, 0.0, runningTimeMaxSeconds_,
+        config::kDriftEnergyBins,
         config::kDriftEnergyMin, config::kDriftEnergyMax);
     energyVsTime_->SetDirectory(nullptr);
     energyVsTime_->SetOption("COLZ");
+    if (calibrated_) energyVsTime_->GetYaxis()->SetTitle("Energy [keV]");
 }
 
 GermaniumConditionHistograms::~GermaniumConditionHistograms() = default;
 
 void GermaniumConditionHistograms::setCalibratedEnergyAxes()
 {
+    calibrated_ = true;
     TH1D* spectra[] = {unconditionedGammaGammaProjection_.get(),
                        bgoVetoedSiliconGammaGammaProjection_.get(),
                        bgoVetoed_.get(), siliconBgoVetoed_.get(),
@@ -114,10 +128,10 @@ void GermaniumConditionHistograms::setCalibratedEnergyAxes()
 }
 
 void GermaniumConditionHistograms::fillHit(
-    double energy, double absoluteTimeSeconds,
+    double energy, double runningTimeSeconds,
     bool survivesBgoVeto, bool siliconCoincident, bool foldValid)
 {
-    energyVsTime_->Fill(absoluteTimeSeconds, energy);
+    energyVsTime_->Fill(runningTimeSeconds, energy);
     if (!survivesBgoVeto) {
         return;
     }

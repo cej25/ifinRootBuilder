@@ -61,8 +61,9 @@ analysed/Run_9um_000294_analysis.root
 `build_analysis_tree --threads N` processes up to `N` different input files at
 once. A single input file therefore uses one file worker; the parallelism is
 intended for a multi-run batch. Each output retains its event structure and
-stores calibrated Ge energies, separated detector-hit vectors, relative times,
-multiplicities, BGO-veto flags, the silicon condition, and FoldValid.
+stores calibrated and raw Ge energies, separated detector-hit vectors,
+relative times, per-file absolute-time metadata, multiplicities, BGO-veto
+flags, the silicon condition, and FoldValid.
 
 Stage two reads any number of analysis trees and constructs the usual
 histograms:
@@ -78,6 +79,7 @@ Stage two uses within-tree multithreading. Calibration and Ge exclusions belong
 to stage one and are therefore not accepted by `analyse_tree`. Analysis-tree
 files made with different timing/gate/exclusion configurations, or a mixture of
 calibrated and uncalibrated files, are rejected rather than silently combined.
+Analysis trees made by an older schema must be rebuilt before use.
 
 To process a larger run range:
 
@@ -149,6 +151,21 @@ build/analyse_raw analysis.root --no-progress Run_30um_*.root
 
 Use `--progress` to explicitly re-enable it. If both switches are given, the
 last one on the command line takes effect.
+
+### Germanium detector and running-time plots
+
+Individual germanium energy spectra are written under
+`Germanium/Energy/Individual`. `Raw` contains 16,384-channel ADC spectra and
+`Calibrated` contains the corresponding calibrated spectra from 0 to 2048 keV.
+Both use the same accepted, in-time Ge hits.
+
+Before event processing, the program reads the first and last `absoluteTime`
+from each input file. It concatenates the elapsed time within each file to form
+a continuous total-running-time coordinate. The all-detector drift matrix is
+stored in `Germanium/Time`, and individual-detector energy-versus-running-time
+matrices are stored in `Germanium/Time/Individual`. The total running time is
+always printed; detailed per-file absolute-time ranges are included when
+diagnostics are enabled.
 
 ### Calibration
 

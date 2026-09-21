@@ -17,6 +17,7 @@
 #include <chrono>
 #include <filesystem>
 #include <iostream>
+#include <limits>
 #include <mutex>
 #include <sstream>
 #include <stdexcept>
@@ -199,6 +200,7 @@ AnalysisTreeBuilder::FileResult AnalysisTreeBuilder::processFile(
 
     std::vector<UShort_t> geID, bgoID, siID, labrID;
     std::vector<Double_t> geEnergy;
+    std::vector<UShort_t> geRawEnergy;
     std::vector<Float_t> geTime, bgoEnergy, bgoTime;
     std::vector<Float_t> siEnergy, siTime, labrEnergy, labrTime;
     std::vector<UChar_t> geSurvivesBgoVeto;
@@ -224,6 +226,7 @@ AnalysisTreeBuilder::FileResult AnalysisTreeBuilder::processFile(
     outputTree.Branch("nonzeroPsdHits", &nonzeroPsdHits);
     outputTree.Branch("geID", &geID);
     outputTree.Branch("geEnergy", &geEnergy);
+    outputTree.Branch("geRawEnergy", &geRawEnergy);
     outputTree.Branch("geTime", &geTime);
     outputTree.Branch("geSurvivesBgoVeto", &geSurvivesBgoVeto);
     outputTree.Branch("bgoID", &bgoID);
@@ -239,8 +242,15 @@ AnalysisTreeBuilder::FileResult AnalysisTreeBuilder::processFile(
     outputTree.SetAutoFlush(-100000000LL);
 
     FileResult result;
+    ULong64_t firstRawAbsoluteTime =
+        std::numeric_limits<ULong64_t>::max();
+    ULong64_t lastRawAbsoluteTime = 0;
     while (reader.Next()) {
         ++result.inputEvents;
+        firstRawAbsoluteTime = std::min(
+            firstRawAbsoluteTime, static_cast<ULong64_t>(*rawAbsoluteTime));
+        lastRawAbsoluteTime = std::max(
+            lastRawAbsoluteTime, static_cast<ULong64_t>(*rawAbsoluteTime));
         const std::size_t hitCount = detectorType->size();
         if (detectorID->size() != hitCount || rawEnergy->size() != hitCount ||
             psd->size() != hitCount || relativeNsTime->size() != hitCount ||
@@ -259,7 +269,7 @@ AnalysisTreeBuilder::FileResult AnalysisTreeBuilder::processFile(
         geTimingCandidates = geTimingPass = bgoTimingPass = 0;
         siTimingPass = siEnergyPass = siCombinedPass = 0;
         nonzeroPsdHits = 0;
-        geID.clear(); geEnergy.clear(); geTime.clear();
+        geID.clear(); geEnergy.clear(); geRawEnergy.clear(); geTime.clear();
         geSurvivesBgoVeto.clear();
         bgoID.clear(); bgoEnergy.clear(); bgoTime.clear();
         siID.clear(); siEnergy.clear(); siTime.clear();
@@ -296,6 +306,7 @@ AnalysisTreeBuilder::FileResult AnalysisTreeBuilder::processFile(
                 }
                 geID.push_back(id);
                 geEnergy.push_back(calibrated.energy);
+                geRawEnergy.push_back(rawEnergy->at(hit));
                 geTime.push_back(static_cast<Float_t>(time));
             } else if (type == config::kBgoType) {
                 bgoID.push_back(id);
@@ -355,12 +366,22 @@ AnalysisTreeBuilder::FileResult AnalysisTreeBuilder::processFile(
     TNamed schemaVersion("AnalysisTreeSchemaVersion",
         std::to_string(config::kAnalysisTreeSchemaVersion).c_str());
     TNamed sourceFile("SourceRawFile", inputFileName.c_str());
+    if (result.inputEvents == 0) {
+        firstRawAbsoluteTime = 0;
+        lastRawAbsoluteTime = 0;
+    }
+    TNamed firstTime("RawAbsoluteTimeFirst",
+        std::to_string(firstRawAbsoluteTime).c_str());
+    TNamed lastTime("RawAbsoluteTimeLast",
+        std::to_string(lastRawAbsoluteTime).c_str());
     const std::string configuration =
         configurationDescription(excludedGermaniumIDs_);
     TNamed configurationRecord("AnalysisConfiguration",
                                configuration.c_str());
     schemaVersion.Write();
     sourceFile.Write();
+    firstTime.Write();
+    lastTime.Write();
     configurationRecord.Write();
     outputTree.Write();
     outputFile.Close();

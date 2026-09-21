@@ -51,6 +51,43 @@ const config::DetectorDefinition& definitionFor(unsigned short type)
     return *found;
 }
 
+std::pair<std::uint64_t, std::uint64_t> rawAbsoluteTimeRange(
+    const std::string& fileName)
+{
+    TFile inputFile(fileName.c_str(), "READ");
+    if (inputFile.IsZombie()) {
+        throw std::runtime_error("could not open input file '" + fileName +
+                                 "' while reading absoluteTime");
+    }
+    TTree* tree = nullptr;
+    inputFile.GetObject(config::kTreeName, tree);
+    if (tree == nullptr) {
+        throw std::runtime_error("input file '" + fileName +
+                                 "' has no tree called '" +
+                                 config::kTreeName + "'");
+    }
+    const Long64_t entries = tree->GetEntries();
+    if (entries == 0) return {0, 0};
+
+    TTreeReader firstReader(tree);
+    TTreeReaderValue<ULong_t> firstValue(
+        firstReader, config::kAbsoluteTimeBranch);
+    if (!firstReader.Next()) {
+        throw std::runtime_error("could not read first absoluteTime from '" +
+                                 fileName + "'");
+    }
+    const std::uint64_t first = *firstValue;
+
+    TTreeReader lastReader(tree);
+    TTreeReaderValue<ULong_t> lastValue(
+        lastReader, config::kAbsoluteTimeBranch);
+    if (lastReader.SetEntry(entries - 1) != TTreeReader::kEntryValid) {
+        throw std::runtime_error("could not read last absoluteTime from '" +
+                                 fileName + "'");
+    }
+    return {first, static_cast<std::uint64_t>(*lastValue)};
+}
+
 std::string formatElapsed(double seconds)
 {
     const auto totalMilliseconds = static_cast<unsigned long long>(
@@ -180,6 +217,8 @@ void RawAnalysis::processReader(TTreeReader& reader,
 
     const GermaniumCalibration* activeCalibration = nullptr;
     std::string activeFileName;
+    TFile* activeInputFile = nullptr;
+    const RunningTimeMap::FileRange* activeTimeRange = nullptr;
     if (!calibrationManager_.usesRunRanges()) {
         activeCalibration = calibrationManager_.calibrationForRun(0);
     }
@@ -194,21 +233,25 @@ void RawAnalysis::processReader(TTreeReader& reader,
             progressReporter->add(pendingProgress);
             pendingProgress = 0;
         }
-        if (calibrationManager_.usesRunRanges()) {
-            TTree* tree = reader.GetTree();
-            TFile* inputFile = tree != nullptr ? tree->GetCurrentFile() : nullptr;
-            if (inputFile == nullptr) {
-                throw std::runtime_error(
-                    "TTreeReader did not provide the current input filename");
-            }
-            const std::string fileName = inputFile->GetName();
-            if (fileName != activeFileName) {
-                activeFileName = fileName;
+        TTree* tree = reader.GetTree();
+        TFile* inputFile = tree != nullptr ? tree->GetCurrentFile() : nullptr;
+        if (inputFile == nullptr) {
+            throw std::runtime_error(
+                "TTreeReader did not provide the current input filename");
+        }
+        if (inputFile != activeInputFile) {
+            activeInputFile = inputFile;
+            activeFileName = inputFile->GetName();
+            activeTimeRange = &runningTimeMap_.rangeForFile(activeFileName);
+            if (calibrationManager_.usesRunRanges()) {
                 const unsigned int run =
-                    RunCalibrationManager::runNumberFromFileName(fileName);
+                    RunCalibrationManager::runNumberFromFileName(
+                        activeFileName);
                 activeCalibration = calibrationManager_.calibrationForRun(run);
             }
         }
+        const double runningTimeSeconds = RunningTimeMap::runningTimeSeconds(
+            *activeTimeRange, *absoluteTime);
 
         const std::size_t hitCount = detectorType->size();
         const bool vectorSizesAgree =
@@ -372,12 +415,13 @@ void RawAnalysis::processReader(TTreeReader& reader,
                 relativeTimesNs[hit]);
             if (isGermanium) {
                 individualGermaniumHistograms_.fill(
-                    detectorID->at(hit), analysedEnergies[hit]);
+                    detectorID->at(hit), analysedEnergies[hit],
+                    energy->at(hit), runningTimeSeconds);
                 const bool survivesBgoVeto =
                     inTimeBgoIDs.count(detectorID->at(hit)) == 0;
                 gateStatistics_.recordBgoVetoDecision(survivesBgoVeto);
                 germaniumConditionHistograms_.fillHit(
-                    analysedEnergies[hit], static_cast<double>(*absoluteTime),
+                    analysedEnergies[hit], runningTimeSeconds,
                     survivesBgoVeto, siliconCoincident, foldValid);
                 if (survivesBgoVeto) {
                     ++germaniumMultiplicityAfterBgoVeto;
@@ -484,6 +528,22 @@ int RawAnalysis::run(const std::vector<std::string>& inputPatterns,
     std::cout << "Reading " << chain.GetNtrees() << " file(s), "
               << chain.GetEntries() << " events.\n";
 
+    try {
+        for (const std::string& fileName : inputFiles) {
+            const auto range = rawAbsoluteTimeRange(fileName);
+            runningTimeMap_.addFile(fileName, range.first, range.second);
+        }
+    } catch (const std::exception& error) {
+        std::cerr << "Absolute-time scan error: " << error.what() << "\n";
+        return 5;
+    }
+    germaniumConditionHistograms_.setRunningTimeRange(
+        runningTimeMap_.totalSeconds());
+    individualGermaniumHistograms_.setRunningTimeRange(
+        runningTimeMap_.totalSeconds());
+    std::cout << "Total running time from " << runningTimeMap_.fileCount()
+              << " file(s): " << runningTimeMap_.totalSeconds() << " s.\n";
+
     if (!calibrationManager_.empty()) {
         configureCalibratedAxes();
         std::cout << "Germanium calibration is enabled"
@@ -533,6 +593,11 @@ int RawAnalysis::run(const std::vector<std::string>& inputPatterns,
                         state->diagnosticsEnabled_ = false;
                         state->excludedGermaniumIDs_ = excludedGermaniumIDs_;
                         state->calibrationManager_ = calibrationManager_;
+                        state->runningTimeMap_ = runningTimeMap_;
+                        state->germaniumConditionHistograms_
+                            .setRunningTimeRange(runningTimeMap_.totalSeconds());
+                        state->individualGermaniumHistograms_
+                            .setRunningTimeRange(runningTimeMap_.totalSeconds());
                         if (!calibrationManager_.empty()) {
                             state->configureCalibratedAxes();
                         }
@@ -598,7 +663,8 @@ int RawAnalysis::run(const std::vector<std::string>& inputPatterns,
     germaniumConditionHistograms_.write(
         *germaniumDirectory, *germaniumEnergyDirectory,
         *germaniumTimeDirectory);
-    individualGermaniumHistograms_.write(*germaniumEnergyDirectory);
+    individualGermaniumHistograms_.write(
+        *germaniumEnergyDirectory, *germaniumTimeDirectory);
     individualSiliconHistograms_.write(*siliconEnergyDirectory);
     individualBgoHistograms_.write(*bgoEnergyDirectory);
     individualLabrHistograms_.write(*labrEnergyDirectory);
@@ -627,6 +693,7 @@ int RawAnalysis::run(const std::vector<std::string>& inputPatterns,
             std::cout << "Raw absoluteTime range: " << firstAbsoluteTime_
                       << " to " << lastAbsoluteTime_ << "\n";
         }
+        runningTimeMap_.print(std::cout);
         combinedStatistics_.print(std::cout, "combined accepted events");
         foldStatistics_.print(std::cout);
         detectorMatchingStatistics_.print(std::cout);
