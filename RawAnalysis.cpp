@@ -157,6 +157,22 @@ void RawAnalysis::addRunMcalFile(unsigned int firstRun, unsigned int lastRun,
     calibrationManager_.addRunMcalFile(firstRun, lastRun, fileName);
 }
 
+void RawAnalysis::loadCoincidenceGates(const std::string& fileName)
+{
+    coincidenceGateConfig_ = CoincidenceGateConfig::load(fileName);
+    gammaCoincidences_.configureGates(coincidenceGateConfig_.symmetric());
+    angularCoincidences_.configureGates(
+        coincidenceGateConfig_.allVsForward(),
+        coincidenceGateConfig_.allVsBackward());
+    std::cout << "Loaded coincidence gates from " << fileName << ": "
+              << coincidenceGateConfig_.symmetric().size()
+              << " symmetric, "
+              << coincidenceGateConfig_.allVsForward().size()
+              << " AllvFW, and "
+              << coincidenceGateConfig_.allVsBackward().size()
+              << " AllvBW.\n";
+}
+
 void RawAnalysis::setDiagnosticsEnabled(bool enabled)
 {
     diagnosticsEnabled_ = enabled;
@@ -593,6 +609,12 @@ int RawAnalysis::run(const std::vector<std::string>& inputPatterns,
                         state->diagnosticsEnabled_ = false;
                         state->excludedGermaniumIDs_ = excludedGermaniumIDs_;
                         state->calibrationManager_ = calibrationManager_;
+                        state->coincidenceGateConfig_ = coincidenceGateConfig_;
+                        state->gammaCoincidences_.configureGates(
+                            coincidenceGateConfig_.symmetric());
+                        state->angularCoincidences_.configureGates(
+                            coincidenceGateConfig_.allVsForward(),
+                            coincidenceGateConfig_.allVsBackward());
                         state->runningTimeMap_ = runningTimeMap_;
                         state->germaniumConditionHistograms_
                             .setRunningTimeRange(runningTimeMap_.totalSeconds());

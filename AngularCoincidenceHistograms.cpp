@@ -4,6 +4,7 @@
 
 #include <TDirectory.h>
 #include <TH1D.h>
+#include <TH2I.h>
 
 #include <stdexcept>
 #include <string>
@@ -27,31 +28,117 @@ std::unique_ptr<TH1D> makeGatedSpectrum(
     return histogram;
 }
 
+std::unique_ptr<TH2I> makeMatrix(
+    const char* name, const char* title,
+    const char* allAxisTitle, const char* angularAxisTitle)
+{
+    const std::string fullTitle = std::string(title) + ";" +
+        allAxisTitle + ";" + angularAxisTitle;
+    auto histogram = std::make_unique<TH2I>(
+        name, fullTitle.c_str(), config::kGammaBins,
+        config::kGammaMin, config::kGammaMax, config::kGammaBins,
+        config::kGammaMin, config::kGammaMax);
+    histogram->SetDirectory(nullptr);
+    histogram->SetOption("COLZ");
+    return histogram;
+}
+
+bool insideHalfOpen(double energy, double minimum, double maximumExclusive)
+{
+    return energy >= minimum && energy < maximumExclusive;
+}
+
+double gateWeight(const CoincidenceGateDefinition& gate, double energy)
+{
+    if (insideHalfOpen(energy, gate.promptMinimum,
+                       gate.promptMaximumExclusive)) {
+        return 1.0;
+    }
+    if (insideHalfOpen(energy, gate.lowerMinimum,
+                       gate.lowerMaximumExclusive) ||
+        insideHalfOpen(energy, gate.upperMinimum,
+                       gate.upperMaximumExclusive)) {
+        return -gate.sidebandScale();
+    }
+    return 0.0;
+}
+
 } // namespace
 
 AngularCoincidenceHistograms::AngularCoincidenceHistograms()
 {
-    gates_.reserve(config::kRddsGates.size());
-    for (const auto& gate : config::kRddsGates) {
-        const std::string baseName =
-            "h1_Ge_Si_gg_" + std::string(gate.name);
-        gates_.push_back({
-            gate.name,
-            gate.minimum,
-            gate.maximumExclusive,
-            makeGatedSpectrum(
-                baseName + "_AllvFW_proj",
-                std::string("Forward spectrum gated on ") + gate.name +
-                    " in all detectors;Energy [raw units];Counts"),
-            makeGatedSpectrum(
-                baseName + "_AllvBW_proj",
-                std::string("Backward spectrum gated on ") + gate.name +
-                    " in all detectors;Energy [raw units];Counts")
-        });
-    }
+    allVsForward_ = makeMatrix(
+        "h2_Ge_Si_gg_AllvFW",
+        "All-detector versus forward-detector gamma-gamma matrix with BGO veto and silicon condition",
+        "E_{all} [raw units]", "E_{FW} [raw units]");
+    allVsBackward_ = makeMatrix(
+        "h2_Ge_Si_gg_AllvBW",
+        "All-detector versus backward-detector gamma-gamma matrix with BGO veto and silicon condition",
+        "E_{all} [raw units]", "E_{BW} [raw units]");
+    allProjectionForward_ = makeGatedSpectrum(
+        "h1_Ge_Si_gg_AllvFW_proj",
+        "ALL-axis projection of all-versus-forward matrix;E_{all} [raw units];Counts");
+    allProjectionBackward_ = makeGatedSpectrum(
+        "h1_Ge_Si_gg_AllvBW_proj",
+        "ALL-axis projection of all-versus-backward matrix;E_{all} [raw units];Counts");
 }
 
 AngularCoincidenceHistograms::~AngularCoincidenceHistograms() = default;
+
+void AngularCoincidenceHistograms::configureGateSet(
+    const std::vector<CoincidenceGateDefinition>& definitions,
+    const char* suffix, const char* angleTitle, bool calibrated,
+    std::vector<GateHistograms>& destination)
+{
+    destination.clear();
+    destination.reserve(definitions.size());
+    for (const CoincidenceGateDefinition& gate : definitions) {
+        const std::string name = "h1_Ge_Si_gg_" + gate.name + "_" +
+            suffix + "_proj";
+        const std::string title = std::string(angleTitle) +
+            " spectrum gated on " + gate.name +
+            " in ALL detectors with sideband subtraction;Energy [raw units];Counts";
+        auto spectrum = makeGatedSpectrum(name, title);
+        spectrum->Sumw2();
+        if (calibrated) spectrum->GetXaxis()->SetTitle("Energy [keV]");
+        destination.push_back({gate, std::move(spectrum)});
+    }
+}
+
+void AngularCoincidenceHistograms::configureGates(
+    const std::vector<CoincidenceGateDefinition>& forwardGates,
+    const std::vector<CoincidenceGateDefinition>& backwardGates)
+{
+    configureGateSet(forwardGates, "AllvFW", "Forward", calibrated_,
+                     forwardGates_);
+    configureGateSet(backwardGates, "AllvBW", "Backward", calibrated_,
+                     backwardGates_);
+}
+
+void AngularCoincidenceHistograms::fillOrientation(
+    double allEnergy, double angularEnergy, unsigned short angularID)
+{
+    const bool isForward = inIdRange(
+        angularID, config::kForwardIDMin, config::kForwardIDMax);
+    const bool isBackward = inIdRange(
+        angularID, config::kBackwardIDMin, config::kBackwardIDMax);
+    if (isForward) {
+        allVsForward_->Fill(allEnergy, angularEnergy);
+        allProjectionForward_->Fill(allEnergy);
+        for (GateHistograms& gate : forwardGates_) {
+            const double weight = gateWeight(gate.definition, allEnergy);
+            if (weight != 0.0) gate.spectrum->Fill(angularEnergy, weight);
+        }
+    }
+    if (isBackward) {
+        allVsBackward_->Fill(allEnergy, angularEnergy);
+        allProjectionBackward_->Fill(allEnergy);
+        for (GateHistograms& gate : backwardGates_) {
+            const double weight = gateWeight(gate.definition, allEnergy);
+            if (weight != 0.0) gate.spectrum->Fill(angularEnergy, weight);
+        }
+    }
+}
 
 void AngularCoincidenceHistograms::fillEvent(
     const std::vector<double>& gammaEnergies,
@@ -65,60 +152,63 @@ void AngularCoincidenceHistograms::fillEvent(
     for (std::size_t first = 0; first < gammaEnergies.size(); ++first) {
         for (std::size_t second = first + 1;
              second < gammaEnergies.size(); ++second) {
-            const double energies[2] = {
-                gammaEnergies[first], gammaEnergies[second]};
-            const unsigned short ids[2] = {
-                gammaIDs[first], gammaIDs[second]};
-            for (int orientation = 0; orientation < 2; ++orientation) {
-                const double allEnergy = energies[orientation];
-                const double angularEnergy = energies[1 - orientation];
-                const unsigned short angularID = ids[1 - orientation];
-                const bool isForward = inIdRange(
-                    angularID, config::kForwardIDMin,
-                    config::kForwardIDMax);
-                const bool isBackward = inIdRange(
-                    angularID, config::kBackwardIDMin,
-                    config::kBackwardIDMax);
-                for (GateHistograms& gate : gates_) {
-                    if (allEnergy < gate.minimum ||
-                        allEnergy >= gate.maximumExclusive) {
-                        continue;
-                    }
-                    if (isForward) {
-                        gate.forward->Fill(angularEnergy);
-                    }
-                    if (isBackward) {
-                        gate.backward->Fill(angularEnergy);
-                    }
-                }
-            }
+            fillOrientation(gammaEnergies[first], gammaEnergies[second],
+                            gammaIDs[second]);
+            fillOrientation(gammaEnergies[second], gammaEnergies[first],
+                            gammaIDs[first]);
         }
     }
 }
 
 void AngularCoincidenceHistograms::setCalibratedEnergyAxes()
 {
-    for (GateHistograms& gate : gates_) {
-        gate.forward->GetXaxis()->SetTitle("Energy [keV]");
-        gate.backward->GetXaxis()->SetTitle("Energy [keV]");
+    calibrated_ = true;
+    allVsForward_->GetXaxis()->SetTitle("E_{all} [keV]");
+    allVsForward_->GetYaxis()->SetTitle("E_{FW} [keV]");
+    allVsBackward_->GetXaxis()->SetTitle("E_{all} [keV]");
+    allVsBackward_->GetYaxis()->SetTitle("E_{BW} [keV]");
+    allProjectionForward_->GetXaxis()->SetTitle("E_{all} [keV]");
+    allProjectionBackward_->GetXaxis()->SetTitle("E_{all} [keV]");
+    for (GateHistograms& gate : forwardGates_) {
+        gate.spectrum->GetXaxis()->SetTitle("Energy [keV]");
+    }
+    for (GateHistograms& gate : backwardGates_) {
+        gate.spectrum->GetXaxis()->SetTitle("Energy [keV]");
     }
 }
 
 void AngularCoincidenceHistograms::merge(
     const AngularCoincidenceHistograms& other)
 {
-    if (gates_.size() != other.gates_.size()) {
-        throw std::logic_error("Cannot merge different angular gate sets");
-    }
-    for (std::size_t index = 0; index < gates_.size(); ++index) {
-        gates_[index].forward->Add(other.gates_[index].forward.get());
-        gates_[index].backward->Add(other.gates_[index].backward.get());
-    }
+    allVsForward_->Add(other.allVsForward_.get());
+    allVsBackward_->Add(other.allVsBackward_.get());
+    allProjectionForward_->Add(other.allProjectionForward_.get());
+    allProjectionBackward_->Add(other.allProjectionBackward_.get());
+    const auto mergeGates = [](std::vector<GateHistograms>& destination,
+                               const std::vector<GateHistograms>& source) {
+        if (destination.size() != source.size()) {
+            throw std::logic_error("Cannot merge different angular gate sets");
+        }
+        for (std::size_t index = 0; index < destination.size(); ++index) {
+            if (!(destination[index].definition == source[index].definition)) {
+                throw std::logic_error("Cannot merge different angular gates");
+            }
+            destination[index].spectrum->Add(source[index].spectrum.get());
+        }
+    };
+    mergeGates(forwardGates_, other.forwardGates_);
+    mergeGates(backwardGates_, other.backwardGates_);
 }
 
 void AngularCoincidenceHistograms::write(
     TDirectory& gammaCoincidenceDirectory) const
 {
+    gammaCoincidenceDirectory.cd();
+    allVsForward_->Write();
+    allVsBackward_->Write();
+    allProjectionForward_->Write();
+    allProjectionBackward_->Write();
+
     TDirectory* gatedDirectory =
         gammaCoincidenceDirectory.GetDirectory("Gated");
     if (gatedDirectory == nullptr) {
@@ -129,11 +219,13 @@ void AngularCoincidenceHistograms::write(
     if (forwardDirectory == nullptr || backwardDirectory == nullptr) {
         throw std::runtime_error("Could not create angular gated directories");
     }
-    for (const GateHistograms& gate : gates_) {
+    for (const GateHistograms& gate : forwardGates_) {
         forwardDirectory->cd();
-        gate.forward->Write();
+        gate.spectrum->Write();
+    }
+    for (const GateHistograms& gate : backwardGates_) {
         backwardDirectory->cd();
-        gate.backward->Write();
+        gate.spectrum->Write();
     }
     gammaCoincidenceDirectory.cd();
 }

@@ -87,6 +87,22 @@ void AnalysisTreeAnalysis::setThreadCount(unsigned int threadCount)
     threadCount_ = threadCount;
 }
 
+void AnalysisTreeAnalysis::loadCoincidenceGates(const std::string& fileName)
+{
+    coincidenceGateConfig_ = CoincidenceGateConfig::load(fileName);
+    gammaCoincidences_.configureGates(coincidenceGateConfig_.symmetric());
+    angularCoincidences_.configureGates(
+        coincidenceGateConfig_.allVsForward(),
+        coincidenceGateConfig_.allVsBackward());
+    std::cout << "Loaded coincidence gates from " << fileName << ": "
+              << coincidenceGateConfig_.symmetric().size()
+              << " symmetric, "
+              << coincidenceGateConfig_.allVsForward().size()
+              << " AllvFW, and "
+              << coincidenceGateConfig_.allVsBackward().size()
+              << " AllvBW.\n";
+}
+
 void AnalysisTreeAnalysis::configureCalibratedAxes()
 {
     detectorHistograms_[detectorIndex_.at(config::kGermaniumType)]
@@ -481,6 +497,12 @@ int AnalysisTreeAnalysis::run(
                     } else {
                         auto state = std::make_unique<AnalysisTreeAnalysis>();
                         state->diagnosticsEnabled_ = false;
+                        state->coincidenceGateConfig_ = coincidenceGateConfig_;
+                        state->gammaCoincidences_.configureGates(
+                            coincidenceGateConfig_.symmetric());
+                        state->angularCoincidences_.configureGates(
+                            coincidenceGateConfig_.allVsForward(),
+                            coincidenceGateConfig_.allVsBackward());
                         state->runningTimeMap_ = runningTimeMap_;
                         state->germaniumConditionHistograms_
                             .setRunningTimeRange(runningTimeMap_.totalSeconds());

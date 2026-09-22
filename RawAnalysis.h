@@ -1,7 +1,9 @@
 #ifndef RAW_ANALYSIS_H
 #define RAW_ANALYSIS_H
 
+#include "AnalysisConfig.h"
 #include "AngularCoincidenceHistograms.h"
+#include "CoincidenceGateConfig.h"
 #include "DetectorHistograms.h"
 #include "GammaCoincidenceHistograms.h"
 #include "GermaniumCalibration.h"
@@ -36,6 +38,7 @@ public:
                        const std::string& fileName);
     void addRunMcalFile(unsigned int firstRun, unsigned int lastRun,
                         const std::string& fileName);
+    void loadCoincidenceGates(const std::string& fileName);
     void setDiagnosticsEnabled(bool enabled);
     void setProgressEnabled(bool enabled);
     void setThreadCount(unsigned int threadCount);
@@ -52,12 +55,13 @@ private:
 
     bool diagnosticsEnabled_ = true;
     bool progressEnabled_ = true;
-    unsigned int threadCount_ = 1;
+    unsigned int threadCount_ = config::kDefaultThreadCount;
     std::unordered_set<unsigned short> excludedGermaniumIDs_;
     std::vector<DetectorHistograms> detectorHistograms_;
     std::unordered_map<unsigned short, std::size_t> detectorIndex_;
     GammaCoincidenceHistograms gammaCoincidences_;
     AngularCoincidenceHistograms angularCoincidences_;
+    CoincidenceGateConfig coincidenceGateConfig_;
     RunCalibrationManager calibrationManager_;
     RunningTimeMap runningTimeMap_;
     GermaniumDetectorHistograms individualGermaniumHistograms_;

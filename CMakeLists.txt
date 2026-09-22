@@ -10,6 +10,7 @@ find_package(Threads REQUIRED)
 
 set(HISTOGRAM_SOURCES
     AngularCoincidenceHistograms.cpp
+    CoincidenceGateConfig.cpp
     DetectorMatchingStatistics.cpp
     DetectorHistograms.cpp
     FoldStatistics.cpp

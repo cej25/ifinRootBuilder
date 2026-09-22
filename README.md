@@ -131,10 +131,13 @@ build/analyse_raw analysis.root --threads 8 Run_30um_*.root
 ```
 
 Each worker fills its own histograms and diagnostics; the program merges them
-before writing the single output file. Omitting the option, or using
-`--threads 1`, retains serial processing. Start with the number of physical CPU
-cores available on the analysis machine. Storage throughput and the memory
-needed for one histogram set per active worker can limit useful scaling.
+before writing the single output file. The default is 4 threads when
+`--threads` is omitted. Any positive thread count can be selected explicitly;
+in particular, `--threads 1` forces serial processing. Start with the number
+of physical CPU cores available on the analysis machine. Storage throughput
+and the memory needed for one histogram set per active worker can limit useful
+scaling. The same default and override apply to `build_analysis_tree` and
+`analyse_tree`.
 
 Every successful run prints both the event-processing time and the total
 analysis time, together with the corresponding event rates. This makes, for
@@ -198,6 +201,71 @@ used.
 
 The run number is read from the final padded numeric field in an input filename
 ending in `_XXXXXX.root`.
+
+### Coincidence gates and angular matrices
+
+Both analysis commands accept an editable coincidence-gate file:
+
+```bash
+build/analyse_raw spectra.root \
+    --gates coincidence_gates.txt \
+    --threads 24 \
+    Run_30um_*.root
+```
+
+or, for the two-stage path:
+
+```bash
+build/analyse_tree spectra.root \
+    --gates coincidence_gates.txt \
+    --threads 24 \
+    analysed/Run_30um_*_analysis.root
+```
+
+The supplied `coincidence_gates.txt` has three sections:
+
+```text
+[Symmetric]
+Gate296 292 300 283 290 310 318
+
+[AllvFW]
+# Add forward gates here
+
+[AllvBW]
+# Add backward gates here
+```
+
+Each gate line is:
+
+```text
+NAME PROMPT_MIN PROMPT_MAX LOWER_MIN LOWER_MAX UPPER_MIN UPPER_MAX
+```
+
+All windows are half-open: `MIN <= energy < MAX`. Thus `292 300`
+contains the 1-keV channels 292 through 299. The program subtracts both
+sidebands and automatically scales them by
+`prompt width / combined sideband width`. Any number of uniquely named gates
+can be included in each section. Lines beginning with `#` and blank lines are
+ignored.
+
+All configurable gated spectra are calibrated when calibration is supplied,
+BGO-vetoed, and silicon-conditioned. `[Symmetric]` gates the regular
+symmetrised gamma-gamma matrix. For `[AllvFW]` and `[AllvBW]`, the gate is
+placed on the `ALL` x-axis and the resulting spectrum shows the forward or
+backward y-axis respectively.
+
+The conditioned angular matrices and their ungated `ALL`-axis projections are
+written directly in `Coincidences`:
+
+```text
+h2_Ge_Si_gg_AllvFW
+h1_Ge_Si_gg_AllvFW_proj
+h2_Ge_Si_gg_AllvBW
+h1_Ge_Si_gg_AllvBW_proj
+```
+
+Configured gated spectra are written beneath `Coincidences/Gated`, with
+`AllvFW` and `AllvBW` subdirectories for the angular spectra.
 
 ### Excluding germanium detectors
 

@@ -7,6 +7,7 @@
 #include <TH2I.h>
 
 #include <stdexcept>
+#include <string>
 
 namespace {
 
@@ -25,6 +26,21 @@ bool insideHalfOpen(double energy, double minimum, double maximumExclusive)
     return energy >= minimum && energy < maximumExclusive;
 }
 
+double gateWeight(const CoincidenceGateDefinition& gate, double energy)
+{
+    if (insideHalfOpen(energy, gate.promptMinimum,
+                       gate.promptMaximumExclusive)) {
+        return 1.0;
+    }
+    if (insideHalfOpen(energy, gate.lowerMinimum,
+                       gate.lowerMaximumExclusive) ||
+        insideHalfOpen(energy, gate.upperMinimum,
+                       gate.upperMaximumExclusive)) {
+        return -gate.sidebandScale();
+    }
+    return 0.0;
+}
+
 } // namespace
 
 GammaCoincidenceHistograms::GammaCoincidenceHistograms()
@@ -41,55 +57,41 @@ GammaCoincidenceHistograms::GammaCoincidenceHistograms()
         config::kGammaBins, config::kGammaMin, config::kGammaMax,
         config::kGammaBins, config::kGammaMin, config::kGammaMax);
 
-    backgroundSubtractedProjectionSiliconCoincident_ = makeProjection(
-        "h1_Ge_Si_gg_Gate292to299_proj",
-        "Background-subtracted 292-299 gated spectrum with BGO veto and silicon condition;Energy [raw units];Counts");
-
     gammaGamma_->SetDirectory(nullptr);
     gammaGammaSiliconCoincident_->SetDirectory(nullptr);
     gammaGamma_->SetOption("COLZ");
     gammaGammaSiliconCoincident_->SetOption("COLZ");
 
-    // Weighted positive/negative fills require explicit sum-of-squares arrays.
-    backgroundSubtractedProjectionSiliconCoincident_->Sumw2();
 }
 
 GammaCoincidenceHistograms::~GammaCoincidenceHistograms() = default;
 
-GammaCoincidenceHistograms::ProjectionWindow
-GammaCoincidenceHistograms::projectionWindow(double energy) const
+void GammaCoincidenceHistograms::configureGates(
+    const std::vector<CoincidenceGateDefinition>& gates)
 {
-    if (insideHalfOpen(energy, config::kGammaGateMin,
-                       config::kGammaGateMaxExclusive)) {
-        return ProjectionWindow::Prompt;
+    gates_.clear();
+    gates_.reserve(gates.size());
+    for (const CoincidenceGateDefinition& gate : gates) {
+        const std::string name =
+            "h1_Ge_Si_gg_" + gate.name + "_proj";
+        const std::string title =
+            "Background-subtracted symmetric gamma-gamma gate " +
+            gate.name +
+            " with BGO veto and silicon condition;Energy [raw units];Counts";
+        auto spectrum = makeProjection(name.c_str(), title.c_str());
+        spectrum->Sumw2();
+        if (calibrated_) spectrum->GetXaxis()->SetTitle("Energy [keV]");
+        gates_.push_back({gate, std::move(spectrum)});
     }
-    if (insideHalfOpen(energy, config::kGammaLowerSidebandMin,
-                       config::kGammaLowerSidebandMaxExclusive)) {
-        return ProjectionWindow::LowerSideband;
-    }
-    if (insideHalfOpen(energy, config::kGammaUpperSidebandMin,
-                       config::kGammaUpperSidebandMaxExclusive)) {
-        return ProjectionWindow::UpperSideband;
-    }
-    return ProjectionWindow::None;
 }
 
 void GammaCoincidenceHistograms::fillProjection(
     double gateEnergy, double projectedEnergy, bool siliconCoincident)
 {
-    const ProjectionWindow window = projectionWindow(gateEnergy);
-    if (window == ProjectionWindow::None) {
-        return;
-    }
-
-    double subtractionWeight = 1.0;
-    if (window != ProjectionWindow::Prompt) {
-        subtractionWeight = -config::kGammaSidebandScale;
-    }
-
-    if (siliconCoincident) {
-        backgroundSubtractedProjectionSiliconCoincident_->Fill(
-            projectedEnergy, subtractionWeight);
+    if (!siliconCoincident) return;
+    for (GateHistogram& gate : gates_) {
+        const double weight = gateWeight(gate.definition, gateEnergy);
+        if (weight != 0.0) gate.spectrum->Fill(projectedEnergy, weight);
     }
 }
 
@@ -120,15 +122,14 @@ void GammaCoincidenceHistograms::fillEvent(
 
 void GammaCoincidenceHistograms::setCalibratedEnergyAxes()
 {
+    calibrated_ = true;
     gammaGamma_->GetXaxis()->SetTitle("E_{#gamma 1} [keV]");
     gammaGamma_->GetYaxis()->SetTitle("E_{#gamma 2} [keV]");
     gammaGammaSiliconCoincident_->GetXaxis()->SetTitle("E_{#gamma 1} [keV]");
     gammaGammaSiliconCoincident_->GetYaxis()->SetTitle("E_{#gamma 2} [keV]");
 
-    TH1D* projections[] = {
-        backgroundSubtractedProjectionSiliconCoincident_.get()};
-    for (TH1D* projection : projections) {
-        projection->GetXaxis()->SetTitle("Energy [keV]");
+    for (GateHistogram& gate : gates_) {
+        gate.spectrum->GetXaxis()->SetTitle("Energy [keV]");
     }
 }
 
@@ -138,8 +139,15 @@ void GammaCoincidenceHistograms::merge(
     gammaGamma_->Add(other.gammaGamma_.get());
     gammaGammaSiliconCoincident_->Add(
         other.gammaGammaSiliconCoincident_.get());
-    backgroundSubtractedProjectionSiliconCoincident_->Add(
-        other.backgroundSubtractedProjectionSiliconCoincident_.get());
+    if (gates_.size() != other.gates_.size()) {
+        throw std::logic_error("Cannot merge different symmetric gate sets");
+    }
+    for (std::size_t index = 0; index < gates_.size(); ++index) {
+        if (!(gates_[index].definition == other.gates_[index].definition)) {
+            throw std::logic_error("Cannot merge different symmetric gates");
+        }
+        gates_[index].spectrum->Add(other.gates_[index].spectrum.get());
+    }
 }
 
 void GammaCoincidenceHistograms::write(TDirectory& parentDirectory) const
@@ -160,6 +168,6 @@ void GammaCoincidenceHistograms::write(TDirectory& parentDirectory) const
             "Could not create Coincidences/Gated directory");
     }
     gatedDirectory->cd();
-    backgroundSubtractedProjectionSiliconCoincident_->Write();
+    for (const GateHistogram& gate : gates_) gate.spectrum->Write();
     parentDirectory.cd();
 }

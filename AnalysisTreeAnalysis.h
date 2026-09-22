@@ -1,7 +1,9 @@
 #ifndef ANALYSIS_TREE_ANALYSIS_H
 #define ANALYSIS_TREE_ANALYSIS_H
 
+#include "AnalysisConfig.h"
 #include "AngularCoincidenceHistograms.h"
+#include "CoincidenceGateConfig.h"
 #include "DetectorHistograms.h"
 #include "DetectorMatchingStatistics.h"
 #include "FoldStatistics.h"
@@ -29,6 +31,7 @@ public:
     void setDiagnosticsEnabled(bool enabled);
     void setProgressEnabled(bool enabled);
     void setThreadCount(unsigned int threadCount);
+    void loadCoincidenceGates(const std::string& fileName);
     int run(const std::vector<std::string>& inputPatterns,
             const std::string& outputFileName);
 
@@ -44,11 +47,12 @@ private:
     bool progressEnabled_ = true;
     bool calibratedEnergySeen_ = false;
     bool uncalibratedEnergySeen_ = false;
-    unsigned int threadCount_ = 1;
+    unsigned int threadCount_ = config::kDefaultThreadCount;
     std::vector<DetectorHistograms> detectorHistograms_;
     std::unordered_map<unsigned short, std::size_t> detectorIndex_;
     GammaCoincidenceHistograms gammaCoincidences_;
     AngularCoincidenceHistograms angularCoincidences_;
+    CoincidenceGateConfig coincidenceGateConfig_;
     GermaniumDetectorHistograms individualGermaniumHistograms_;
     GermaniumConditionHistograms germaniumConditionHistograms_;
     IndividualDetectorHistograms individualSiliconHistograms_;

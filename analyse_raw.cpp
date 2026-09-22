@@ -23,6 +23,7 @@ void printUsage(const char* program)
         << "[--diagnostics|--no-diagnostics] "
         << "[--progress|--no-progress] "
         << "[--threads N] "
+        << "[--gates coincidence_gates.txt] "
         << "[--exclude-ge ID[,ID...]] "
         << "input1.root [input2.root ...]\n\n"
         << "Examples:\n"
@@ -108,6 +109,12 @@ int main(int argc, char** argv)
                 const unsigned int threadCount =
                     parseRunNumber(argv[++argument]);
                 analysis.setThreadCount(threadCount);
+            } else if (value == "--gates") {
+                if (argument + 1 >= argc) {
+                    std::cerr << "Error: --gates requires a filename.\n";
+                    return 1;
+                }
+                analysis.loadCoincidenceGates(argv[++argument]);
             } else if (value == "--exclude-ge") {
                 if (argument + 1 >= argc) {
                     std::cerr << "Error: --exclude-ge requires a comma-separated "

@@ -1,6 +1,7 @@
 #ifndef ANALYSIS_TREE_BUILDER_H
 #define ANALYSIS_TREE_BUILDER_H
 
+#include "AnalysisConfig.h"
 #include "RunCalibrationManager.h"
 
 #include <string>
@@ -34,7 +35,7 @@ private:
                            const std::string& outputFileName) const;
 
     bool diagnosticsEnabled_ = true;
-    unsigned int threadCount_ = 1;
+    unsigned int threadCount_ = config::kDefaultThreadCount;
     std::unordered_set<unsigned short> excludedGermaniumIDs_;
     RunCalibrationManager calibrationManager_;
 };

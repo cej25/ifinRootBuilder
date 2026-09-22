@@ -28,7 +28,8 @@ void usage(const char* program)
     std::cerr << "Usage: " << program
               << " OUTPUT.root [--threads N] "
               << "[--diagnostics|--no-diagnostics] "
-              << "[--progress|--no-progress] ANALYSIS.root [...]\n";
+              << "[--progress|--no-progress] "
+              << "[--gates coincidence_gates.txt] ANALYSIS.root [...]\n";
 }
 
 } // namespace
@@ -55,6 +56,10 @@ int main(int argc, char** argv)
                 analysis.setDiagnosticsEnabled(value == "--diagnostics");
             } else if (value == "--progress" || value == "--no-progress") {
                 analysis.setProgressEnabled(value == "--progress");
+            } else if (value == "--gates") {
+                if (++argument >= argc) throw std::runtime_error(
+                    "--gates requires a filename");
+                analysis.loadCoincidenceGates(argv[argument]);
             } else if (!value.empty() && value.front() == '-') {
                 throw std::runtime_error("unknown option '" + value + "'");
             } else {

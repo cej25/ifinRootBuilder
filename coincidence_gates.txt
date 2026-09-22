@@ -1,0 +1,13 @@
+# Coincidence gates. All windows use MIN <= energy < MAX.
+# NAME PROMPT_MIN PROMPT_MAX LOWER_MIN LOWER_MAX UPPER_MIN UPPER_MAX
+
+[Symmetric]
+Gate296 292 300 283 290 310 318
+
+[AllvFW]
+# Example:
+# Gate596 592 600 580 588 604 612
+
+[AllvBW]
+# Example:
+# Gate596 592 600 580 588 604 612

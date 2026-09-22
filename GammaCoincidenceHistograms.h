@@ -1,6 +1,8 @@
 #ifndef GAMMA_COINCIDENCE_HISTOGRAMS_H
 #define GAMMA_COINCIDENCE_HISTOGRAMS_H
 
+#include "CoincidenceGateConfig.h"
+
 #include <memory>
 #include <vector>
 
@@ -19,25 +21,25 @@ public:
 
     void fillEvent(const std::vector<double>& gammaEnergies,
                    bool siliconCoincident);
+    void configureGates(
+        const std::vector<CoincidenceGateDefinition>& gates);
     void setCalibratedEnergyAxes();
     void merge(const GammaCoincidenceHistograms& other);
     void write(TDirectory& parentDirectory) const;
 
 private:
-    enum class ProjectionWindow {
-        None,
-        Prompt,
-        LowerSideband,
-        UpperSideband
-    };
-
-    ProjectionWindow projectionWindow(double energy) const;
     void fillProjection(double gateEnergy, double projectedEnergy,
                         bool siliconCoincident);
 
+    struct GateHistogram {
+        CoincidenceGateDefinition definition;
+        std::unique_ptr<TH1D> spectrum;
+    };
+
     std::unique_ptr<TH2I> gammaGamma_;
     std::unique_ptr<TH2I> gammaGammaSiliconCoincident_;
-    std::unique_ptr<TH1D> backgroundSubtractedProjectionSiliconCoincident_;
+    std::vector<GateHistogram> gates_;
+    bool calibrated_ = false;
 };
 
 #endif

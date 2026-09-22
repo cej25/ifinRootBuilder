@@ -18,6 +18,8 @@ inline constexpr const char* kRelativeNsBranch    = "relativeNsTime";
 inline constexpr const char* kRelativePsBranch    = "relativePsTime";
 inline constexpr const char* kAbsoluteTimeBranch  = "absoluteTime";
 
+inline constexpr unsigned int kDefaultThreadCount = 4;
+
 // relativeNsTime is unsigned, so the provisional event-time range is 0--2.2 us.
 // Time is displayed in ns after reconstructing it from the coarse and fine parts.
 inline constexpr int    kTimeBins  = 2200;
@@ -63,18 +65,6 @@ inline constexpr double kIndividualGermaniumRawMax  = 16384.0;
 inline constexpr int    kGammaBins = 2048;
 inline constexpr double kGammaMin  = 0.0;
 inline constexpr double kGammaMax  = 2048.0;
-// Half-open energy windows corresponding to the requested inclusive 1-keV
-// channels: prompt 292--299, lower 283--289, and upper 310--317.
-inline constexpr double kGammaGateMin = 292.0;
-inline constexpr double kGammaGateMaxExclusive = 300.0;
-inline constexpr double kGammaLowerSidebandMin = 283.0;
-inline constexpr double kGammaLowerSidebandMaxExclusive = 290.0;
-inline constexpr double kGammaUpperSidebandMin = 310.0;
-inline constexpr double kGammaUpperSidebandMaxExclusive = 318.0;
-inline constexpr double kGammaSidebandScale =
-    (kGammaGateMaxExclusive - kGammaGateMin) /
-    ((kGammaLowerSidebandMaxExclusive - kGammaLowerSidebandMin) +
-     (kGammaUpperSidebandMaxExclusive - kGammaUpperSidebandMin));
 
 // absoluteTime is interpreted as seconds. The running-time x-axis is set at
 // runtime to the sum of the per-file durations while keeping a fixed number
@@ -128,17 +118,6 @@ inline constexpr unsigned short kForwardIDMin = 0;
 inline constexpr unsigned short kForwardIDMax = 4;
 inline constexpr unsigned short kBackwardIDMin = 20;
 inline constexpr unsigned short kBackwardIDMax = 24;
-
-// Optional RDDS gates on the all-detector (x) axis. Change the array size and
-// add entries here later; forward/backward projected spectra are then created
-// automatically. Limits are half-open [minimum, maximumExclusive).
-struct RddsGateDefinition {
-    const char* name;
-    double minimum;
-    double maximumExclusive;
-};
-
-inline constexpr std::array<RddsGateDefinition, 0> kRddsGates{};
 
 } // namespace config
 
