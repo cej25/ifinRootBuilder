@@ -2,7 +2,7 @@
 # NAME PROMPT_MIN PROMPT_MAX LOWER_MIN LOWER_MAX UPPER_MIN UPPER_MAX
 
 [Symmetric]
-Gate296 292 300 283 290 310 318
+Gate296 294 298 288 292 310 314
 
 [AllvFW]
 # Example:
@@ -11,3 +11,10 @@ Gate296 292 300 283 290 310 318
 [AllvBW]
 # Example:
 # Gate596 592 600 580 588 604 612
+
+[Double]
+# Require at least three accepted gamma rays. A gamma in REQUIRED_MIN--MAX is
+# removed, the remaining gamma rays form a symmetric matrix, and the second
+# prompt/sideband gate produces the double-gated spectrum.
+# NAME REQUIRED_MIN REQUIRED_MAX PROMPT_MIN PROMPT_MAX LOWER_MIN LOWER_MAX UPPER_MIN UPPER_MAX
+4plus2plus 445 449 294 298 288 292 310 314

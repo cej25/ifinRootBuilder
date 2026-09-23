@@ -20,6 +20,7 @@ public:
     void setCalibratedEnergyAxes();
     void setRunningTimeRange(double totalRunningTimeSeconds);
     void fillHit(double energy, double runningTimeSeconds,
+                 bool runningTimeValid,
                  bool survivesBgoVeto, bool siliconCoincident,
                  bool foldValid);
     void fillUnconditionedCoincidences(

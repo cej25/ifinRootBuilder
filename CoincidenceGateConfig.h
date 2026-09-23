@@ -17,6 +17,15 @@ struct CoincidenceGateDefinition {
     bool operator==(const CoincidenceGateDefinition& other) const;
 };
 
+struct DoubleCoincidenceGateDefinition {
+    std::string name;
+    double requiredMinimum = 0.0;
+    double requiredMaximumExclusive = 0.0;
+    CoincidenceGateDefinition secondGate;
+
+    bool operator==(const DoubleCoincidenceGateDefinition& other) const;
+};
+
 class CoincidenceGateConfig {
 public:
     static CoincidenceGateConfig load(const std::string& fileName);
@@ -24,11 +33,13 @@ public:
     const std::vector<CoincidenceGateDefinition>& symmetric() const;
     const std::vector<CoincidenceGateDefinition>& allVsForward() const;
     const std::vector<CoincidenceGateDefinition>& allVsBackward() const;
+    const std::vector<DoubleCoincidenceGateDefinition>& doubleGates() const;
 
 private:
     std::vector<CoincidenceGateDefinition> symmetric_;
     std::vector<CoincidenceGateDefinition> allVsForward_;
     std::vector<CoincidenceGateDefinition> allVsBackward_;
+    std::vector<DoubleCoincidenceGateDefinition> doubleGates_;
 };
 
 #endif

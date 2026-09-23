@@ -14,7 +14,8 @@ enum class Section {
     None,
     Symmetric,
     AllVsForward,
-    AllVsBackward
+    AllVsBackward,
+    Double
 };
 
 std::string trim(const std::string& value)
@@ -83,6 +84,15 @@ bool CoincidenceGateDefinition::operator==(
         upperMaximumExclusive == other.upperMaximumExclusive;
 }
 
+bool DoubleCoincidenceGateDefinition::operator==(
+    const DoubleCoincidenceGateDefinition& other) const
+{
+    return name == other.name &&
+        requiredMinimum == other.requiredMinimum &&
+        requiredMaximumExclusive == other.requiredMaximumExclusive &&
+        secondGate == other.secondGate;
+}
+
 CoincidenceGateConfig CoincidenceGateConfig::load(
     const std::string& fileName)
 {
@@ -94,7 +104,7 @@ CoincidenceGateConfig CoincidenceGateConfig::load(
 
     CoincidenceGateConfig result;
     Section section = Section::None;
-    std::unordered_set<std::string> namesBySection[3];
+    std::unordered_set<std::string> namesBySection[4];
     std::string rawLine;
     std::size_t lineNumber = 0;
     while (std::getline(input, rawLine)) {
@@ -111,6 +121,8 @@ CoincidenceGateConfig CoincidenceGateConfig::load(
                 section = Section::AllVsForward;
             } else if (heading == "AllvBW") {
                 section = Section::AllVsBackward;
+            } else if (heading == "Double") {
+                section = Section::Double;
             } else {
                 throw std::runtime_error(
                     fileName + ":" + std::to_string(lineNumber) +
@@ -124,16 +136,35 @@ CoincidenceGateConfig CoincidenceGateConfig::load(
                 ": gate appears before a section heading");
         }
 
-        CoincidenceGateDefinition gate;
         std::istringstream fields(line);
-        if (!(fields >> gate.name >> gate.promptMinimum
-              >> gate.promptMaximumExclusive >> gate.lowerMinimum
-              >> gate.lowerMaximumExclusive >> gate.upperMinimum
-              >> gate.upperMaximumExclusive)) {
-            throw std::runtime_error(
-                fileName + ":" + std::to_string(lineNumber) +
-                ": expected NAME PROMPT_MIN PROMPT_MAX LOWER_MIN LOWER_MAX "
-                "UPPER_MIN UPPER_MAX");
+        CoincidenceGateDefinition gate;
+        DoubleCoincidenceGateDefinition doubleGate;
+        if (section == Section::Double) {
+            if (!(fields >> doubleGate.name >> doubleGate.requiredMinimum
+                  >> doubleGate.requiredMaximumExclusive
+                  >> doubleGate.secondGate.promptMinimum
+                  >> doubleGate.secondGate.promptMaximumExclusive
+                  >> doubleGate.secondGate.lowerMinimum
+                  >> doubleGate.secondGate.lowerMaximumExclusive
+                  >> doubleGate.secondGate.upperMinimum
+                  >> doubleGate.secondGate.upperMaximumExclusive)) {
+                throw std::runtime_error(
+                    fileName + ":" + std::to_string(lineNumber) +
+                    ": expected NAME REQUIRED_MIN REQUIRED_MAX PROMPT_MIN "
+                    "PROMPT_MAX LOWER_MIN LOWER_MAX UPPER_MIN UPPER_MAX");
+            }
+            doubleGate.secondGate.name = doubleGate.name;
+            gate = doubleGate.secondGate;
+        } else {
+            if (!(fields >> gate.name >> gate.promptMinimum
+                  >> gate.promptMaximumExclusive >> gate.lowerMinimum
+                  >> gate.lowerMaximumExclusive >> gate.upperMinimum
+                  >> gate.upperMaximumExclusive)) {
+                throw std::runtime_error(
+                    fileName + ":" + std::to_string(lineNumber) +
+                    ": expected NAME PROMPT_MIN PROMPT_MAX LOWER_MIN "
+                    "LOWER_MAX UPPER_MIN UPPER_MAX");
+            }
         }
         std::string extra;
         if (fields >> extra) {
@@ -142,10 +173,20 @@ CoincidenceGateConfig CoincidenceGateConfig::load(
                 ": unexpected extra field '" + extra + "'");
         }
         validate(gate, fileName, lineNumber);
+        if (section == Section::Double &&
+            (!std::isfinite(doubleGate.requiredMinimum) ||
+             !std::isfinite(doubleGate.requiredMaximumExclusive) ||
+             doubleGate.requiredMinimum >=
+                 doubleGate.requiredMaximumExclusive)) {
+            throw std::runtime_error(
+                fileName + ":" + std::to_string(lineNumber) +
+                ": required double-gate window needs MIN < MAX");
+        }
 
         const std::size_t sectionIndex =
             section == Section::Symmetric ? 0U :
-            section == Section::AllVsForward ? 1U : 2U;
+            section == Section::AllVsForward ? 1U :
+            section == Section::AllVsBackward ? 2U : 3U;
         if (!namesBySection[sectionIndex].insert(gate.name).second) {
             throw std::runtime_error(
                 fileName + ":" + std::to_string(lineNumber) +
@@ -155,8 +196,10 @@ CoincidenceGateConfig CoincidenceGateConfig::load(
             result.symmetric_.push_back(gate);
         } else if (section == Section::AllVsForward) {
             result.allVsForward_.push_back(gate);
-        } else {
+        } else if (section == Section::AllVsBackward) {
             result.allVsBackward_.push_back(gate);
+        } else {
+            result.doubleGates_.push_back(doubleGate);
         }
     }
     return result;
@@ -178,4 +221,10 @@ const std::vector<CoincidenceGateDefinition>&
 CoincidenceGateConfig::allVsBackward() const
 {
     return allVsBackward_;
+}
+
+const std::vector<DoubleCoincidenceGateDefinition>&
+CoincidenceGateConfig::doubleGates() const
+{
+    return doubleGates_;
 }

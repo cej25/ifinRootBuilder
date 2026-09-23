@@ -161,6 +161,8 @@ void RawAnalysis::loadCoincidenceGates(const std::string& fileName)
 {
     coincidenceGateConfig_ = CoincidenceGateConfig::load(fileName);
     gammaCoincidences_.configureGates(coincidenceGateConfig_.symmetric());
+    gammaCoincidences_.configureDoubleGates(
+        coincidenceGateConfig_.doubleGates());
     angularCoincidences_.configureGates(
         coincidenceGateConfig_.allVsForward(),
         coincidenceGateConfig_.allVsBackward());
@@ -170,7 +172,9 @@ void RawAnalysis::loadCoincidenceGates(const std::string& fileName)
               << coincidenceGateConfig_.allVsForward().size()
               << " AllvFW, and "
               << coincidenceGateConfig_.allVsBackward().size()
-              << " AllvBW.\n";
+              << " AllvBW, and "
+              << coincidenceGateConfig_.doubleGates().size()
+              << " double.\n";
 }
 
 void RawAnalysis::setDiagnosticsEnabled(bool enabled)
@@ -266,8 +270,13 @@ void RawAnalysis::processReader(TTreeReader& reader,
                 activeCalibration = calibrationManager_.calibrationForRun(run);
             }
         }
-        const double runningTimeSeconds = RunningTimeMap::runningTimeSeconds(
-            *activeTimeRange, *absoluteTime);
+        double runningTimeSeconds = 0.0;
+        const bool runningTimeValid = RunningTimeMap::tryRunningTimeSeconds(
+            *activeTimeRange, *absoluteTime, runningTimeSeconds);
+        if (!runningTimeValid) {
+            ++invalidAbsoluteTimeEvents_;
+            ++invalidAbsoluteTimeByFile_[activeFileName];
+        }
 
         const std::size_t hitCount = detectorType->size();
         const bool vectorSizesAgree =
@@ -432,12 +441,13 @@ void RawAnalysis::processReader(TTreeReader& reader,
             if (isGermanium) {
                 individualGermaniumHistograms_.fill(
                     detectorID->at(hit), analysedEnergies[hit],
-                    energy->at(hit), runningTimeSeconds);
+                    energy->at(hit), runningTimeSeconds, runningTimeValid);
                 const bool survivesBgoVeto =
                     inTimeBgoIDs.count(detectorID->at(hit)) == 0;
                 gateStatistics_.recordBgoVetoDecision(survivesBgoVeto);
                 germaniumConditionHistograms_.fillHit(
                     analysedEnergies[hit], runningTimeSeconds,
+                    runningTimeValid,
                     survivesBgoVeto, siliconCoincident, foldValid);
                 if (survivesBgoVeto) {
                     ++germaniumMultiplicityAfterBgoVeto;
@@ -509,6 +519,10 @@ void RawAnalysis::merge(const RawAnalysis& other)
     missingCalibrationEvents_ += other.missingCalibrationEvents_;
     outOfRangeCalibrationEvents_ += other.outOfRangeCalibrationEvents_;
     nonFiniteCalibrationEvents_ += other.nonFiniteCalibrationEvents_;
+    invalidAbsoluteTimeEvents_ += other.invalidAbsoluteTimeEvents_;
+    for (const auto& item : other.invalidAbsoluteTimeByFile_) {
+        invalidAbsoluteTimeByFile_[item.first] += item.second;
+    }
     firstAbsoluteTime_ = std::min(firstAbsoluteTime_, other.firstAbsoluteTime_);
     lastAbsoluteTime_ = std::max(lastAbsoluteTime_, other.lastAbsoluteTime_);
 }
@@ -612,6 +626,8 @@ int RawAnalysis::run(const std::vector<std::string>& inputPatterns,
                         state->coincidenceGateConfig_ = coincidenceGateConfig_;
                         state->gammaCoincidences_.configureGates(
                             coincidenceGateConfig_.symmetric());
+                        state->gammaCoincidences_.configureDoubleGates(
+                            coincidenceGateConfig_.doubleGates());
                         state->angularCoincidences_.configureGates(
                             coincidenceGateConfig_.allVsForward(),
                             coincidenceGateConfig_.allVsBackward());
@@ -645,6 +661,11 @@ int RawAnalysis::run(const std::vector<std::string>& inputPatterns,
 
     std::cout << "Processed " << processedEvents_
               << " events.             \n";
+    if (invalidAbsoluteTimeEvents_ != 0) {
+        std::cout << "Events omitted only from running-time histograms due "
+                  << "to out-of-range absoluteTime: "
+                  << invalidAbsoluteTimeEvents_ << "\n";
+    }
 
     TFile outputFile(outputFileName.c_str(), "RECREATE");
     if (outputFile.IsZombie()) {
@@ -710,7 +731,13 @@ int RawAnalysis::run(const std::vector<std::string>& inputPatterns,
                   << "Events rejected outside Ge calibration range: "
                   << outOfRangeCalibrationEvents_ << "\n"
                   << "Events rejected for non-finite Ge calibration: "
-                  << nonFiniteCalibrationEvents_ << "\n";
+                  << nonFiniteCalibrationEvents_ << "\n"
+                  << "Events with unusable absoluteTime: "
+                  << invalidAbsoluteTimeEvents_ << "\n";
+        for (const auto& item : invalidAbsoluteTimeByFile_) {
+            std::cout << "  " << item.first << ": " << item.second
+                      << " event(s)\n";
+        }
         if (processedEvents_ > malformedEvents_) {
             std::cout << "Raw absoluteTime range: " << firstAbsoluteTime_
                       << " to " << lastAbsoluteTime_ << "\n";

@@ -22,7 +22,8 @@ public:
     void setCalibratedEnergyAxes();
     void setRunningTimeRange(double totalRunningTimeSeconds);
     void fill(UShort_t detectorID, double calibratedEnergy,
-              double rawEnergy, double runningTimeSeconds);
+              double rawEnergy, double runningTimeSeconds,
+              bool runningTimeValid);
     void merge(const GermaniumDetectorHistograms& other);
     void write(TDirectory& germaniumEnergyDirectory,
                TDirectory& germaniumTimeDirectory) const;

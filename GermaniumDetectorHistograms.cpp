@@ -113,11 +113,13 @@ TH2I& GermaniumDetectorHistograms::timeSpectrumFor(UShort_t detectorID)
 
 void GermaniumDetectorHistograms::fill(
     UShort_t detectorID, double calibratedEnergy,
-    double rawEnergy, double runningTimeSeconds)
+    double rawEnergy, double runningTimeSeconds, bool runningTimeValid)
 {
     calibratedSpectrumFor(detectorID).Fill(calibratedEnergy);
     rawSpectrumFor(detectorID).Fill(rawEnergy);
-    timeSpectrumFor(detectorID).Fill(runningTimeSeconds, calibratedEnergy);
+    if (runningTimeValid) {
+        timeSpectrumFor(detectorID).Fill(runningTimeSeconds, calibratedEnergy);
+    }
 }
 
 void GermaniumDetectorHistograms::merge(

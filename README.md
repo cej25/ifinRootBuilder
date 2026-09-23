@@ -170,6 +170,11 @@ matrices are stored in `Germanium/Time/Individual`. The total running time is
 always printed; detailed per-file absolute-time ranges are included when
 diagnostics are enabled.
 
+If an event has an `absoluteTime` outside its file's recorded first-to-last
+range, analysis continues. The event still contributes to all energy,
+multiplicity and coincidence products; it is omitted only from the total-
+running-time matrices. The number of affected events is printed at the end.
+
 ### Calibration
 
 One or more global calibration stages can be supplied. They are applied from
@@ -222,7 +227,7 @@ build/analyse_tree spectra.root \
     analysed/Run_30um_*_analysis.root
 ```
 
-The supplied `coincidence_gates.txt` has three sections:
+The supplied `coincidence_gates.txt` has four sections:
 
 ```text
 [Symmetric]
@@ -233,6 +238,9 @@ Gate296 292 300 283 290 310 318
 
 [AllvBW]
 # Add backward gates here
+
+[Double]
+# Add triple-coincidence/double-gate definitions here
 ```
 
 Each gate line is:
@@ -266,6 +274,36 @@ h1_Ge_Si_gg_AllvBW_proj
 
 Configured gated spectra are written beneath `Coincidences/Gated`, with
 `AllvFW` and `AllvBW` subdirectories for the angular spectra.
+
+The optional `[Double]` section creates triple-coincidence products without a
+full gamma cube. Its lines contain:
+
+```text
+NAME REQUIRED_MIN REQUIRED_MAX PROMPT_MIN PROMPT_MAX LOWER_MIN LOWER_MAX UPPER_MIN UPPER_MAX
+```
+
+An event must contain at least three BGO-vetoed Ge hits and satisfy the silicon
+condition. One gamma in the half-open `REQUIRED_MIN--REQUIRED_MAX` window is
+removed. The remaining gammas fill a regular symmetrised gamma-gamma matrix;
+the prompt and scaled-sideband windows are then applied to that matrix to make
+the double-gated spectrum. If several gammas satisfy the required window, the
+event is entered once and the first matching hit is used. Matrices and spectra
+are stored together in `Coincidences/DoubleGated` as:
+
+```text
+h2_Ge_Si_gg_DG_NAME
+h1_Ge_Si_gg_DG_NAME_proj
+```
+
+For example:
+
+```text
+[Double]
+TripleGate 390 410 540 560 520 535 565 580
+```
+
+requires a 390--410 keV gamma, forms the matrix from the other gamma rays, and
+then gates 540--560 keV with the stated lower and upper sidebands.
 
 ### Excluding germanium detectors
 

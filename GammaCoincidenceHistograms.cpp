@@ -21,6 +21,17 @@ std::unique_ptr<TH1D> makeProjection(const char* name, const char* title)
     return histogram;
 }
 
+std::unique_ptr<TH2I> makeMatrix(const char* name, const char* title)
+{
+    auto histogram = std::make_unique<TH2I>(
+        name, title, config::kGammaBins, config::kGammaMin,
+        config::kGammaMax, config::kGammaBins, config::kGammaMin,
+        config::kGammaMax);
+    histogram->SetDirectory(nullptr);
+    histogram->SetOption("COLZ");
+    return histogram;
+}
+
 bool insideHalfOpen(double energy, double minimum, double maximumExclusive)
 {
     return energy >= minimum && energy < maximumExclusive;
@@ -85,6 +96,77 @@ void GammaCoincidenceHistograms::configureGates(
     }
 }
 
+void GammaCoincidenceHistograms::configureDoubleGates(
+    const std::vector<DoubleCoincidenceGateDefinition>& gates)
+{
+    doubleGates_.clear();
+    doubleGates_.reserve(gates.size());
+    for (const DoubleCoincidenceGateDefinition& gate : gates) {
+        const std::string matrixName =
+            "h2_Ge_Si_gg_DG_" + gate.name;
+        const std::string matrixTitle =
+            "Symmetrised gamma-gamma matrix after required gamma gate " +
+            gate.name +
+            " with BGO veto and silicon condition;E_{#gamma 1} [raw units];E_{#gamma 2} [raw units]";
+        const std::string spectrumName =
+            "h1_Ge_Si_gg_DG_" + gate.name + "_proj";
+        const std::string spectrumTitle =
+            "Double-gated spectrum " + gate.name +
+            " with sideband subtraction;Energy [raw units];Counts";
+        auto matrix = makeMatrix(matrixName.c_str(), matrixTitle.c_str());
+        auto spectrum = makeProjection(
+            spectrumName.c_str(), spectrumTitle.c_str());
+        spectrum->Sumw2();
+        if (calibrated_) {
+            matrix->GetXaxis()->SetTitle("E_{#gamma 1} [keV]");
+            matrix->GetYaxis()->SetTitle("E_{#gamma 2} [keV]");
+            spectrum->GetXaxis()->SetTitle("Energy [keV]");
+        }
+        doubleGates_.push_back(
+            {gate, std::move(matrix), std::move(spectrum)});
+    }
+}
+
+void GammaCoincidenceHistograms::fillDoubleGates(
+    const std::vector<double>& gammaEnergies)
+{
+    if (gammaEnergies.size() < 3) return;
+    for (DoubleGateHistograms& gate : doubleGates_) {
+        std::size_t required = gammaEnergies.size();
+        for (std::size_t index = 0; index < gammaEnergies.size(); ++index) {
+            if (insideHalfOpen(
+                    gammaEnergies[index], gate.definition.requiredMinimum,
+                    gate.definition.requiredMaximumExclusive)) {
+                required = index;
+                break;
+            }
+        }
+        if (required == gammaEnergies.size()) continue;
+
+        for (std::size_t first = 0; first < gammaEnergies.size(); ++first) {
+            if (first == required) continue;
+            for (std::size_t second = first + 1;
+                 second < gammaEnergies.size(); ++second) {
+                if (second == required) continue;
+                const double firstEnergy = gammaEnergies[first];
+                const double secondEnergy = gammaEnergies[second];
+                gate.matrix->Fill(firstEnergy, secondEnergy);
+                gate.matrix->Fill(secondEnergy, firstEnergy);
+                const double firstWeight = gateWeight(
+                    gate.definition.secondGate, firstEnergy);
+                if (firstWeight != 0.0) {
+                    gate.spectrum->Fill(secondEnergy, firstWeight);
+                }
+                const double secondWeight = gateWeight(
+                    gate.definition.secondGate, secondEnergy);
+                if (secondWeight != 0.0) {
+                    gate.spectrum->Fill(firstEnergy, secondWeight);
+                }
+            }
+        }
+    }
+}
+
 void GammaCoincidenceHistograms::fillProjection(
     double gateEnergy, double projectedEnergy, bool siliconCoincident)
 {
@@ -118,6 +200,7 @@ void GammaCoincidenceHistograms::fillEvent(
             fillProjection(secondEnergy, firstEnergy, siliconCoincident);
         }
     }
+    if (siliconCoincident) fillDoubleGates(gammaEnergies);
 }
 
 void GammaCoincidenceHistograms::setCalibratedEnergyAxes()
@@ -129,6 +212,11 @@ void GammaCoincidenceHistograms::setCalibratedEnergyAxes()
     gammaGammaSiliconCoincident_->GetYaxis()->SetTitle("E_{#gamma 2} [keV]");
 
     for (GateHistogram& gate : gates_) {
+        gate.spectrum->GetXaxis()->SetTitle("Energy [keV]");
+    }
+    for (DoubleGateHistograms& gate : doubleGates_) {
+        gate.matrix->GetXaxis()->SetTitle("E_{#gamma 1} [keV]");
+        gate.matrix->GetYaxis()->SetTitle("E_{#gamma 2} [keV]");
         gate.spectrum->GetXaxis()->SetTitle("Energy [keV]");
     }
 }
@@ -147,6 +235,19 @@ void GammaCoincidenceHistograms::merge(
             throw std::logic_error("Cannot merge different symmetric gates");
         }
         gates_[index].spectrum->Add(other.gates_[index].spectrum.get());
+    }
+    if (doubleGates_.size() != other.doubleGates_.size()) {
+        throw std::logic_error("Cannot merge different double-gate sets");
+    }
+    for (std::size_t index = 0; index < doubleGates_.size(); ++index) {
+        if (!(doubleGates_[index].definition ==
+              other.doubleGates_[index].definition)) {
+            throw std::logic_error("Cannot merge different double gates");
+        }
+        doubleGates_[index].matrix->Add(
+            other.doubleGates_[index].matrix.get());
+        doubleGates_[index].spectrum->Add(
+            other.doubleGates_[index].spectrum.get());
     }
 }
 
@@ -169,5 +270,16 @@ void GammaCoincidenceHistograms::write(TDirectory& parentDirectory) const
     }
     gatedDirectory->cd();
     for (const GateHistogram& gate : gates_) gate.spectrum->Write();
+
+    TDirectory* doubleDirectory = directory->mkdir("DoubleGated");
+    if (doubleDirectory == nullptr) {
+        throw std::runtime_error(
+            "Could not create Coincidences/DoubleGated directory");
+    }
+    doubleDirectory->cd();
+    for (const DoubleGateHistograms& gate : doubleGates_) {
+        gate.matrix->Write();
+        gate.spectrum->Write();
+    }
     parentDirectory.cd();
 }

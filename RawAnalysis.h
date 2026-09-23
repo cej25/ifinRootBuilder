@@ -82,6 +82,8 @@ private:
     ULong64_t missingCalibrationEvents_ = 0;
     ULong64_t outOfRangeCalibrationEvents_ = 0;
     ULong64_t nonFiniteCalibrationEvents_ = 0;
+    ULong64_t invalidAbsoluteTimeEvents_ = 0;
+    std::unordered_map<std::string, ULong64_t> invalidAbsoluteTimeByFile_;
     ULong_t firstAbsoluteTime_ = static_cast<ULong_t>(-1);
     ULong_t lastAbsoluteTime_ = 0;
 };

@@ -69,6 +69,8 @@ private:
     ULong64_t malformedEvents_ = 0;
     ULong64_t unknownHits_ = 0;
     ULong64_t nonzeroPsdHits_ = 0;
+    ULong64_t invalidAbsoluteTimeEvents_ = 0;
+    std::unordered_map<std::string, ULong64_t> invalidAbsoluteTimeByFile_;
     ULong64_t firstAbsoluteTime_ = static_cast<ULong64_t>(-1);
     ULong64_t lastAbsoluteTime_ = 0;
 };

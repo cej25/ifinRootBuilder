@@ -24,6 +24,9 @@ public:
     const FileRange& rangeForFile(const std::string& fileName) const;
     static double runningTimeSeconds(const FileRange& range,
                                      std::uint64_t absoluteTime);
+    static bool tryRunningTimeSeconds(const FileRange& range,
+                                      std::uint64_t absoluteTime,
+                                      double& runningTimeSeconds) noexcept;
     double totalSeconds() const;
     std::size_t fileCount() const;
     void print(std::ostream& output) const;

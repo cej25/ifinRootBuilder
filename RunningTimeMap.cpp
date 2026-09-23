@@ -55,6 +55,19 @@ double RunningTimeMap::runningTimeSeconds(
         static_cast<double>(absoluteTime - range.firstAbsoluteTime);
 }
 
+bool RunningTimeMap::tryRunningTimeSeconds(
+    const FileRange& range, std::uint64_t absoluteTime,
+    double& runningTimeSeconds) noexcept
+{
+    if (absoluteTime < range.firstAbsoluteTime ||
+        absoluteTime > range.lastAbsoluteTime) {
+        return false;
+    }
+    runningTimeSeconds = range.offsetSeconds +
+        static_cast<double>(absoluteTime - range.firstAbsoluteTime);
+    return true;
+}
+
 double RunningTimeMap::totalSeconds() const
 {
     return totalSeconds_;

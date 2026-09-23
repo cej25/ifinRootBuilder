@@ -128,10 +128,10 @@ void GermaniumConditionHistograms::setCalibratedEnergyAxes()
 }
 
 void GermaniumConditionHistograms::fillHit(
-    double energy, double runningTimeSeconds,
+    double energy, double runningTimeSeconds, bool runningTimeValid,
     bool survivesBgoVeto, bool siliconCoincident, bool foldValid)
 {
-    energyVsTime_->Fill(runningTimeSeconds, energy);
+    if (runningTimeValid) energyVsTime_->Fill(runningTimeSeconds, energy);
     if (!survivesBgoVeto) {
         return;
     }

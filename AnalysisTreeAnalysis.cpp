@@ -91,6 +91,8 @@ void AnalysisTreeAnalysis::loadCoincidenceGates(const std::string& fileName)
 {
     coincidenceGateConfig_ = CoincidenceGateConfig::load(fileName);
     gammaCoincidences_.configureGates(coincidenceGateConfig_.symmetric());
+    gammaCoincidences_.configureDoubleGates(
+        coincidenceGateConfig_.doubleGates());
     angularCoincidences_.configureGates(
         coincidenceGateConfig_.allVsForward(),
         coincidenceGateConfig_.allVsBackward());
@@ -100,7 +102,9 @@ void AnalysisTreeAnalysis::loadCoincidenceGates(const std::string& fileName)
               << coincidenceGateConfig_.allVsForward().size()
               << " AllvFW, and "
               << coincidenceGateConfig_.allVsBackward().size()
-              << " AllvBW.\n";
+              << " AllvBW, and "
+              << coincidenceGateConfig_.doubleGates().size()
+              << " double.\n";
 }
 
 void AnalysisTreeAnalysis::configureCalibratedAxes()
@@ -160,6 +164,7 @@ void AnalysisTreeAnalysis::processReader(
     constexpr std::uint64_t kProgressBatchSize = 10000;
     std::uint64_t pendingProgress = 0;
     TFile* activeInputFile = nullptr;
+    std::string activeFileName;
     const RunningTimeMap::FileRange* activeTimeRange = nullptr;
     while (reader.Next()) {
         ++processedEvents_;
@@ -177,11 +182,17 @@ void AnalysisTreeAnalysis::processReader(
         }
         if (inputFile != activeInputFile) {
             activeInputFile = inputFile;
+            activeFileName = inputFile->GetName();
             activeTimeRange = &runningTimeMap_.rangeForFile(
-                inputFile->GetName());
+                activeFileName);
         }
-        const double runningTimeSeconds = RunningTimeMap::runningTimeSeconds(
-            *activeTimeRange, *absoluteTime);
+        double runningTimeSeconds = 0.0;
+        const bool runningTimeValid = RunningTimeMap::tryRunningTimeSeconds(
+            *activeTimeRange, *absoluteTime, runningTimeSeconds);
+        if (!runningTimeValid) {
+            ++invalidAbsoluteTimeEvents_;
+            ++invalidAbsoluteTimeByFile_[activeFileName];
+        }
 
         const bool sizesAgree =
             geID->size() == geEnergy->size() &&
@@ -256,11 +267,11 @@ void AnalysisTreeAnalysis::processReader(
                 .fillHit(geID->at(hit), energy, geTime->at(hit));
             individualGermaniumHistograms_.fill(
                 geID->at(hit), energy, geRawEnergy->at(hit),
-                runningTimeSeconds);
+                runningTimeSeconds, runningTimeValid);
             const bool survives = geSurvivesBgoVeto->at(hit) != 0;
             gateStatistics_.recordBgoVetoDecision(survives);
             germaniumConditionHistograms_.fillHit(
-                energy, runningTimeSeconds, survives,
+                energy, runningTimeSeconds, runningTimeValid, survives,
                 *siliconCoincident, foldValid);
             if (survives) {
                 vetoedGammaEnergies.push_back(energy);
@@ -334,6 +345,10 @@ void AnalysisTreeAnalysis::merge(const AnalysisTreeAnalysis& other)
     malformedEvents_ += other.malformedEvents_;
     unknownHits_ += other.unknownHits_;
     nonzeroPsdHits_ += other.nonzeroPsdHits_;
+    invalidAbsoluteTimeEvents_ += other.invalidAbsoluteTimeEvents_;
+    for (const auto& item : other.invalidAbsoluteTimeByFile_) {
+        invalidAbsoluteTimeByFile_[item.first] += item.second;
+    }
     firstAbsoluteTime_ = std::min(firstAbsoluteTime_, other.firstAbsoluteTime_);
     lastAbsoluteTime_ = std::max(lastAbsoluteTime_, other.lastAbsoluteTime_);
 }
@@ -384,7 +399,13 @@ void AnalysisTreeAnalysis::printDiagnostics() const
 {
     std::cout << "Malformed analysis events skipped: " << malformedEvents_ << "\n"
               << "Hits with unknown detectorType: " << unknownHits_ << "\n"
-              << "Hits with non-zero psd: " << nonzeroPsdHits_ << "\n";
+              << "Hits with non-zero psd: " << nonzeroPsdHits_ << "\n"
+              << "Events with unusable absoluteTime: "
+              << invalidAbsoluteTimeEvents_ << "\n";
+    for (const auto& item : invalidAbsoluteTimeByFile_) {
+        std::cout << "  " << item.first << ": " << item.second
+                  << " event(s)\n";
+    }
     if (processedEvents_ > malformedEvents_) {
         std::cout << "Raw absoluteTime range: " << firstAbsoluteTime_
                   << " to " << lastAbsoluteTime_ << "\n";
@@ -500,6 +521,8 @@ int AnalysisTreeAnalysis::run(
                         state->coincidenceGateConfig_ = coincidenceGateConfig_;
                         state->gammaCoincidences_.configureGates(
                             coincidenceGateConfig_.symmetric());
+                        state->gammaCoincidences_.configureDoubleGates(
+                            coincidenceGateConfig_.doubleGates());
                         state->angularCoincidences_.configureGates(
                             coincidenceGateConfig_.allVsForward(),
                             coincidenceGateConfig_.allVsBackward());
@@ -530,6 +553,11 @@ int AnalysisTreeAnalysis::run(
         return 5;
     }
     std::cout << "Processed " << processedEvents_ << " events.\n";
+    if (invalidAbsoluteTimeEvents_ != 0) {
+        std::cout << "Events omitted only from running-time histograms due "
+                  << "to out-of-range absoluteTime: "
+                  << invalidAbsoluteTimeEvents_ << "\n";
+    }
     const int writeStatus = writeOutput(outputFileName);
     if (writeStatus != 0) return writeStatus;
     std::cout << "Wrote histograms to " << outputFileName << ".\n";
