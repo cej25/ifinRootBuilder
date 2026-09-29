@@ -20,6 +20,8 @@ void printUsage(const char* program)
         << " output.root [--cal file.cal] [--mcal file.mcal] "
         << "[--run-cal first last file.cal] "
         << "[--run-mcal first last file.mcal] "
+        << "[--run-by-run-cal file.cal] "
+        << "[--run-by-run-mcal file.mcal] "
         << "[--diagnostics|--no-diagnostics] "
         << "[--progress|--no-progress] "
         << "[--threads N] "
@@ -149,6 +151,19 @@ int main(int argc, char** argv)
                 } else {
                     analysis.addRunMcalFile(
                         firstRun, lastRun, calibrationFile);
+                }
+            } else if (value == "--run-by-run-cal" ||
+                       value == "--run-by-run-mcal") {
+                if (argument + 1 >= argc) {
+                    std::cerr << "Error: " << value
+                              << " requires a filename.\n";
+                    return 1;
+                }
+                const std::string calibrationFile = argv[++argument];
+                if (value == "--run-by-run-cal") {
+                    analysis.addRunByRunCalFile(calibrationFile);
+                } else {
+                    analysis.addRunByRunMcalFile(calibrationFile);
                 }
             } else if (!value.empty() && value.front() == '-') {
                 std::cerr << "Error: unknown option '" << value << "'.\n";

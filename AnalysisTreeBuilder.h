@@ -16,6 +16,8 @@ public:
                        const std::string& fileName);
     void addRunMcalFile(unsigned int firstRun, unsigned int lastRun,
                         const std::string& fileName);
+    void addRunByRunCalFile(const std::string& fileName);
+    void addRunByRunMcalFile(const std::string& fileName);
     void excludeGermaniumID(unsigned int detectorID);
     void setDiagnosticsEnabled(bool enabled);
     void setThreadCount(unsigned int threadCount);

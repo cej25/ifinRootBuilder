@@ -157,6 +157,16 @@ void RawAnalysis::addRunMcalFile(unsigned int firstRun, unsigned int lastRun,
     calibrationManager_.addRunMcalFile(firstRun, lastRun, fileName);
 }
 
+void RawAnalysis::addRunByRunCalFile(const std::string& fileName)
+{
+    calibrationManager_.addRunByRunCalFile(fileName);
+}
+
+void RawAnalysis::addRunByRunMcalFile(const std::string& fileName)
+{
+    calibrationManager_.addRunByRunMcalFile(fileName);
+}
+
 void RawAnalysis::loadCoincidenceGates(const std::string& fileName)
 {
     coincidenceGateConfig_ = CoincidenceGateConfig::load(fileName);
@@ -239,7 +249,7 @@ void RawAnalysis::processReader(TTreeReader& reader,
     std::string activeFileName;
     TFile* activeInputFile = nullptr;
     const RunningTimeMap::FileRange* activeTimeRange = nullptr;
-    if (!calibrationManager_.usesRunRanges()) {
+    if (!calibrationManager_.usesRunDependentCalibration()) {
         activeCalibration = calibrationManager_.calibrationForRun(0);
     }
 
@@ -263,7 +273,7 @@ void RawAnalysis::processReader(TTreeReader& reader,
             activeInputFile = inputFile;
             activeFileName = inputFile->GetName();
             activeTimeRange = &runningTimeMap_.rangeForFile(activeFileName);
-            if (calibrationManager_.usesRunRanges()) {
+            if (calibrationManager_.usesRunDependentCalibration()) {
                 const unsigned int run =
                     RunCalibrationManager::runNumberFromFileName(
                         activeFileName);
@@ -577,10 +587,10 @@ int RawAnalysis::run(const std::vector<std::string>& inputPatterns,
     if (!calibrationManager_.empty()) {
         configureCalibratedAxes();
         std::cout << "Germanium calibration is enabled"
-                  << (calibrationManager_.usesRunRanges()
-                          ? " with run-dependent ranges.\n"
+                  << (calibrationManager_.usesRunDependentCalibration()
+                          ? " with run-dependent selection.\n"
                           : ".\n");
-        if (calibrationManager_.usesRunRanges()) {
+        if (calibrationManager_.usesRunDependentCalibration()) {
             try {
                 for (const std::string& fileName : inputFiles) {
                     const unsigned int run =

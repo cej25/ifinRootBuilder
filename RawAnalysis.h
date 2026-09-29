@@ -38,6 +38,8 @@ public:
                        const std::string& fileName);
     void addRunMcalFile(unsigned int firstRun, unsigned int lastRun,
                         const std::string& fileName);
+    void addRunByRunCalFile(const std::string& fileName);
+    void addRunByRunMcalFile(const std::string& fileName);
     void loadCoincidenceGates(const std::string& fileName);
     void setDiagnosticsEnabled(bool enabled);
     void setProgressEnabled(bool enabled);

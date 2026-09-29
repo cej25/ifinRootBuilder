@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <fstream>
+#include <iterator>
 #include <limits>
 #include <sstream>
 #include <stdexcept>
@@ -84,12 +85,14 @@ void requireEndOfLine(std::istringstream& input,
 
 bool lineMatchesLayout(const std::string& line,
                        bool piecewise,
-                       bool hasDetectorGroup)
+                       std::size_t leadingColumns)
 {
     std::istringstream input(line);
     long long value = 0;
-    if (hasDetectorGroup && !(input >> value)) {
-        return false;
+    for (std::size_t column = 0; column < leadingColumns; ++column) {
+        if (!(input >> value)) {
+            return false;
+        }
     }
 
     long long detectorID = -1;
@@ -139,6 +142,31 @@ void GermaniumCalibration::addMcalFile(const std::string& fileName)
     addFile(fileName, true);
 }
 
+std::unordered_map<unsigned int, GermaniumCalibration>
+GermaniumCalibration::loadRunByRunCalFile(const std::string& fileName)
+{
+    return loadRunByRunFile(fileName, false);
+}
+
+std::unordered_map<unsigned int, GermaniumCalibration>
+GermaniumCalibration::loadRunByRunMcalFile(const std::string& fileName)
+{
+    return loadRunByRunFile(fileName, true);
+}
+
+void GermaniumCalibration::appendStages(GermaniumCalibration&& other)
+{
+    stages_.insert(stages_.end(),
+                   std::make_move_iterator(other.stages_.begin()),
+                   std::make_move_iterator(other.stages_.end()));
+    other.stages_.clear();
+}
+
+void GermaniumCalibration::appendStages(const GermaniumCalibration& other)
+{
+    stages_.insert(stages_.end(), other.stages_.begin(), other.stages_.end());
+}
+
 bool GermaniumCalibration::empty() const
 {
     return stages_.empty();
@@ -171,6 +199,9 @@ GermaniumCalibration::Result GermaniumCalibration::calibrate(
     for (const Stage& stage : stages_) {
         const auto detector = stage.detectors.find(detectorID);
         if (detector == stage.detectors.end()) {
+            if (stage.allowMissingDetectorIDs) {
+                continue;
+            }
             return {energy, Failure::MissingID};
         }
 
@@ -226,8 +257,8 @@ void GermaniumCalibration::addFile(const std::string& fileName,
         }
 
         if (!layoutKnown) {
-            const bool idFirst = lineMatchesLayout(line, piecewise, false);
-            const bool groupThenId = lineMatchesLayout(line, piecewise, true);
+            const bool idFirst = lineMatchesLayout(line, piecewise, 0);
+            const bool groupThenId = lineMatchesLayout(line, piecewise, 1);
             if (idFirst == groupThenId) {
                 throw parseError(
                     fileName, lineNumber,
@@ -238,7 +269,8 @@ void GermaniumCalibration::addFile(const std::string& fileName,
             layoutKnown = true;
         }
 
-        if (!lineMatchesLayout(line, piecewise, hasDetectorGroup)) {
+        if (!lineMatchesLayout(line, piecewise,
+                               hasDetectorGroup ? 1U : 0U)) {
             throw parseError(fileName, lineNumber,
                              "line does not match the file's column layout");
         }
@@ -305,4 +337,126 @@ void GermaniumCalibration::addFile(const std::string& fileName,
     }
 
     stages_.push_back(std::move(stage));
+}
+
+std::unordered_map<unsigned int, GermaniumCalibration>
+GermaniumCalibration::loadRunByRunFile(const std::string& fileName,
+                                       bool piecewise)
+{
+    std::ifstream file(fileName);
+    if (!file) {
+        throw std::runtime_error(
+            "Could not open run-by-run calibration file '" + fileName + "'");
+    }
+
+    std::unordered_map<unsigned int, Stage> stagesByRun;
+    std::string line;
+    std::size_t lineNumber = 0;
+    bool layoutKnown = false;
+    bool hasDetectorGroup = false;
+
+    while (std::getline(file, line)) {
+        ++lineNumber;
+        if (!prepareDataLine(line)) {
+            continue;
+        }
+
+        if (!layoutKnown) {
+            const bool runThenID = lineMatchesLayout(line, piecewise, 1);
+            const bool runGroupThenID = lineMatchesLayout(line, piecewise, 2);
+            if (runThenID == runGroupThenID) {
+                throw parseError(
+                    fileName, lineNumber,
+                    runThenID ? "ambiguous run-by-run calibration-column layout"
+                              : "invalid run-by-run calibration-column layout");
+            }
+            hasDetectorGroup = runGroupThenID;
+            layoutKnown = true;
+        }
+
+        if (!lineMatchesLayout(line, piecewise,
+                               hasDetectorGroup ? 2U : 1U)) {
+            throw parseError(
+                fileName, lineNumber,
+                "line does not match the file's run-by-run column layout");
+        }
+
+        std::istringstream input(line);
+        unsigned long long parsedRun = 0;
+        if (!(input >> parsedRun) ||
+            parsedRun > std::numeric_limits<unsigned int>::max()) {
+            throw parseError(fileName, lineNumber, "invalid run number");
+        }
+        const unsigned int run = static_cast<unsigned int>(parsedRun);
+
+        if (hasDetectorGroup) {
+            long long detectorGroup = 0;
+            input >> detectorGroup;
+        }
+        const UShort_t detectorID =
+            readDetectorID(input, fileName, lineNumber);
+
+        Stage& stage = stagesByRun[run];
+        stage.sourceFile = fileName;
+        stage.allowMissingDetectorIDs = true;
+        if (stage.detectors.find(detectorID) != stage.detectors.end()) {
+            throw parseError(fileName, lineNumber,
+                             "duplicate detector ID " +
+                             std::to_string(detectorID) + " for run " +
+                             std::to_string(run));
+        }
+
+        DetectorCalibration detectorCalibration;
+        detectorCalibration.piecewise = piecewise;
+        if (!piecewise) {
+            const std::size_t coefficientCount = readPositiveCount(
+                input, fileName, lineNumber, "coefficient count");
+            detectorCalibration.pieces.push_back({
+                readCoefficients(input, coefficientCount,
+                                 fileName, lineNumber),
+                std::numeric_limits<double>::infinity()
+            });
+        } else {
+            const std::size_t pieceCount = readPositiveCount(
+                input, fileName, lineNumber, "piece count");
+            double previousEnd = 0.0;
+            for (std::size_t pieceIndex = 0;
+                 pieceIndex < pieceCount; ++pieceIndex) {
+                const std::size_t coefficientCount = readPositiveCount(
+                    input, fileName, lineNumber, "coefficient count");
+                std::vector<double> coefficients = readCoefficients(
+                    input, coefficientCount, fileName, lineNumber);
+
+                double endValue = 0.0;
+                if (!(input >> endValue) || !std::isfinite(endValue) ||
+                    endValue <= previousEnd) {
+                    throw parseError(
+                        fileName, lineNumber,
+                        "piece end values must be finite and strictly increasing");
+                }
+                detectorCalibration.pieces.push_back(
+                    {std::move(coefficients), endValue});
+                previousEnd = endValue;
+            }
+        }
+
+        requireEndOfLine(input, fileName, lineNumber);
+        stage.detectors.emplace(detectorID,
+                                std::move(detectorCalibration));
+    }
+
+    if (stagesByRun.empty()) {
+        throw std::runtime_error(
+            "Run-by-run calibration file '" + fileName +
+            "' contains no detector data");
+    }
+
+    std::unordered_map<unsigned int, GermaniumCalibration> calibrations;
+    calibrations.reserve(stagesByRun.size());
+    for (auto& entry : stagesByRun) {
+        GermaniumCalibration calibration;
+        calibration.stages_.push_back(std::move(entry.second));
+        calibrations.emplace(entry.first, std::move(calibration));
+    }
+    return calibrations;
 }

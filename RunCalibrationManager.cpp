@@ -4,35 +4,43 @@
 #include <limits>
 #include <regex>
 #include <stdexcept>
+#include <utility>
 
-void RunCalibrationManager::requireCompatibleMode(bool addingRange) const
+void RunCalibrationManager::requireCompatibleBaseMode(
+    BaseMode addingMode) const
 {
-    if (addingRange && !globalCalibration_.empty()) {
+    const bool hasGlobal = !globalCalibration_.empty();
+    const bool hasRanges = !ranges_.empty();
+    if ((addingMode == BaseMode::Global && hasRanges) ||
+        (addingMode == BaseMode::Ranges && hasGlobal)) {
         throw std::runtime_error(
-            "Global --cal/--mcal options cannot be mixed with run-ranged calibrations");
+            "Global and run-ranged main calibrations cannot be mixed");
     }
-    if (!addingRange && !ranges_.empty()) {
-        throw std::runtime_error(
-            "Run-ranged calibrations cannot be mixed with global --cal/--mcal options");
-    }
+}
+
+void RunCalibrationManager::invalidateCombinedCalibrations()
+{
+    combinedByRun_.clear();
 }
 
 void RunCalibrationManager::addGlobalCalFile(const std::string& fileName)
 {
-    requireCompatibleMode(false);
+    requireCompatibleBaseMode(BaseMode::Global);
     globalCalibration_.addCalFile(fileName);
+    invalidateCombinedCalibrations();
 }
 
 void RunCalibrationManager::addGlobalMcalFile(const std::string& fileName)
 {
-    requireCompatibleMode(false);
+    requireCompatibleBaseMode(BaseMode::Global);
     globalCalibration_.addMcalFile(fileName);
+    invalidateCombinedCalibrations();
 }
 
 RunCalibrationManager::Range& RunCalibrationManager::rangeFor(
     unsigned int firstRun, unsigned int lastRun)
 {
-    requireCompatibleMode(true);
+    requireCompatibleBaseMode(BaseMode::Ranges);
     if (firstRun > lastRun) {
         throw std::runtime_error(
             "Calibration range start must not exceed its end");
@@ -56,25 +64,87 @@ void RunCalibrationManager::addRunCalFile(
     unsigned int firstRun, unsigned int lastRun, const std::string& fileName)
 {
     rangeFor(firstRun, lastRun).calibration.addCalFile(fileName);
+    invalidateCombinedCalibrations();
 }
 
 void RunCalibrationManager::addRunMcalFile(
     unsigned int firstRun, unsigned int lastRun, const std::string& fileName)
 {
     rangeFor(firstRun, lastRun).calibration.addMcalFile(fileName);
+    invalidateCombinedCalibrations();
+}
+
+void RunCalibrationManager::addRunByRunCalFile(
+    const std::string& fileName)
+{
+    addRunByRunFile(fileName, false);
+}
+
+void RunCalibrationManager::addRunByRunMcalFile(
+    const std::string& fileName)
+{
+    addRunByRunFile(fileName, true);
+}
+
+void RunCalibrationManager::addRunByRunFile(
+    const std::string& fileName, bool piecewise)
+{
+    auto loaded = piecewise
+        ? GermaniumCalibration::loadRunByRunMcalFile(fileName)
+        : GermaniumCalibration::loadRunByRunCalFile(fileName);
+
+    for (auto& entry : loaded) {
+        auto existing = runByRun_.find(entry.first);
+        if (existing == runByRun_.end()) {
+            runByRun_.emplace(entry.first, std::move(entry.second));
+        } else {
+            existing->second.appendStages(std::move(entry.second));
+        }
+    }
+    invalidateCombinedCalibrations();
 }
 
 bool RunCalibrationManager::empty() const
 {
-    return globalCalibration_.empty() && ranges_.empty();
+    return globalCalibration_.empty() && ranges_.empty() && runByRun_.empty();
 }
 
-bool RunCalibrationManager::usesRunRanges() const
+bool RunCalibrationManager::usesRunDependentCalibration() const
 {
-    return !ranges_.empty();
+    return !ranges_.empty() || !runByRun_.empty();
 }
 
 const GermaniumCalibration* RunCalibrationManager::calibrationForRun(
+    unsigned int run) const
+{
+    const GermaniumCalibration* base = baseCalibrationForRun(run);
+    if (!runByRun_.empty() && base == nullptr) {
+        throw std::runtime_error(
+            "Run-by-run fine adjustments require a main calibration "
+            "for run " + std::to_string(run));
+    }
+    const auto adjustment = runByRun_.find(run);
+    if (adjustment == runByRun_.end()) {
+        if (base != nullptr) {
+            return base;
+        }
+        return nullptr;
+    }
+
+    const auto existing = combinedByRun_.find(run);
+    if (existing != combinedByRun_.end()) {
+        return &existing->second;
+    }
+
+    GermaniumCalibration combined;
+    if (base != nullptr) {
+        combined.appendStages(*base);
+    }
+    combined.appendStages(adjustment->second);
+    return &combinedByRun_.emplace(run, std::move(combined)).first->second;
+}
+
+const GermaniumCalibration* RunCalibrationManager::baseCalibrationForRun(
     unsigned int run) const
 {
     if (!ranges_.empty()) {

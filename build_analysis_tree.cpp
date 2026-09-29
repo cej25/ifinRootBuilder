@@ -42,6 +42,7 @@ void usage(const char* program)
               << " OUTPUT_DIRECTORY [OPTIONS] INPUT.root [...]\n"
               << "Options: --cal FILE --mcal FILE "
               << "--run-cal FIRST LAST FILE --run-mcal FIRST LAST FILE "
+              << "--run-by-run-cal FILE --run-by-run-mcal FILE "
               << "--threads N --exclude-ge ID[,ID...] "
               << "--diagnostics|--no-diagnostics\n";
 }
@@ -86,6 +87,15 @@ int main(int argc, char** argv)
                 const std::string file = argv[++argument];
                 if (value == "--run-cal") builder.addRunCalFile(first, last, file);
                 else builder.addRunMcalFile(first, last, file);
+            } else if (value == "--run-by-run-cal" ||
+                       value == "--run-by-run-mcal") {
+                if (++argument >= argc) throw std::runtime_error(
+                    value + " requires a file");
+                if (value == "--run-by-run-cal") {
+                    builder.addRunByRunCalFile(argv[argument]);
+                } else {
+                    builder.addRunByRunMcalFile(argv[argument]);
+                }
             } else if (!value.empty() && value.front() == '-') {
                 throw std::runtime_error("unknown option '" + value + "'");
             } else {

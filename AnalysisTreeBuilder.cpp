@@ -110,6 +110,18 @@ void AnalysisTreeBuilder::addRunMcalFile(
     calibrationManager_.addRunMcalFile(firstRun, lastRun, fileName);
 }
 
+void AnalysisTreeBuilder::addRunByRunCalFile(
+    const std::string& fileName)
+{
+    calibrationManager_.addRunByRunCalFile(fileName);
+}
+
+void AnalysisTreeBuilder::addRunByRunMcalFile(
+    const std::string& fileName)
+{
+    calibrationManager_.addRunByRunMcalFile(fileName);
+}
+
 void AnalysisTreeBuilder::excludeGermaniumID(unsigned int detectorID)
 {
     if (detectorID >= config::kGermaniumIdBins) {
@@ -137,7 +149,7 @@ AnalysisTreeBuilder::FileResult AnalysisTreeBuilder::processFile(
     const std::string& inputFileName,
     const std::string& outputFileName) const
 {
-    const unsigned int run = calibrationManager_.usesRunRanges()
+    const unsigned int run = calibrationManager_.usesRunDependentCalibration()
         ? RunCalibrationManager::runNumberFromFileName(inputFileName) : 0;
     const GermaniumCalibration* calibration =
         calibrationManager_.calibrationForRun(run);
@@ -427,7 +439,7 @@ int AnalysisTreeBuilder::run(
             return 2;
         }
         try {
-            const unsigned int run = calibrationManager_.usesRunRanges()
+            const unsigned int run = calibrationManager_.usesRunDependentCalibration()
                 ? RunCalibrationManager::runNumberFromFileName(input) : 0;
             calibrationManager_.calibrationForRun(run);
         } catch (const std::exception& error) {

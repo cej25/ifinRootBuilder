@@ -94,6 +94,18 @@ build/analyse_tree spectra.root --threads 24 \
     analysed/Run_9um_*_analysis.root
 ```
 
+For a single calibration file containing separate coefficients for every run,
+stage one can instead use the run-by-run options described below:
+
+```bash
+build/build_analysis_tree analysed \
+    --cal calibrations/main.cal \
+    --mcal calibrations/main_fine.mcal \
+    --run-by-run-cal calibrations/drift_by_run.cal \
+    --threads 24 \
+    Run_9um_*.root
+```
+
 ### Direct raw analysis
 
 The original single-stage analyser remains available for validation and for
@@ -200,9 +212,40 @@ build/analyse_raw analysis.root \
 
 Stages with the same run range are applied in command-line order. Run ranges
 must not overlap, and every input run must be covered when run-dependent
-calibration is used. Global and run-dependent calibration options cannot be
-mixed in one invocation. With no calibration option, raw energy values are
-used.
+calibration is used.
+
+A large run-by-run fine-adjustment file is selected with
+`--run-by-run-cal FILE` or `--run-by-run-mcal FILE`. It is applied after the
+main calibration, so its polynomial input is the already-calibrated energy.
+Each non-comment line starts with its run number and then uses the existing
+`.cal` or `.mcal` detector format. For example:
+
+```text
+# RUN  ID  NCOEFF  C0       C1
+294    0   2       0.284    0.198186
+294    1   2       0.507    0.179789
+295    0   2       0.301    0.198021
+295    1   2       0.492    0.179910
+```
+
+and a run-by-run piecewise file uses:
+
+```text
+# RUN ID NPIECES  NCOEFF COEFFICIENTS... END  [NCOEFF COEFFICIENTS... END ...]
+294   0  2        2      0.1 0.2        1000  2      0.2 0.199      2048
+```
+
+The optional legacy detector-group value is also accepted between `RUN` and
+`ID`. Multiple run-by-run files form successive fine-adjustment stages in
+command-line order. A detector ID omitted from a fine-adjustment stage keeps
+the energy produced by the preceding stage, and a run omitted from the file
+uses only its main calibration. Missing detector IDs in the main calibration
+still reject events containing those Ge hits.
+
+The main calibration may use global `--cal`/`--mcal` options or the existing
+`--run-cal`/`--run-mcal` ranges. Global and run-ranged *main* calibrations
+cannot be mixed with each other, but either form can be followed by run-by-run
+fine adjustments. With no calibration option, raw energy values are used.
 
 The run number is read from the final padded numeric field in an input filename
 ending in `_XXXXXX.root`.
