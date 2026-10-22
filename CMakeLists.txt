@@ -56,6 +56,11 @@ add_executable(fit_calibration_peaks
     GermaniumCalibration.cpp
 )
 
+add_executable(fit_energy_calibration
+    fit_energy_calibration.cpp
+    EnergyCalibrationFitter.cpp
+)
+
 set(ROOT_ANALYSIS_LIBRARIES
     ROOT::Core
     ROOT::RIO
@@ -69,7 +74,8 @@ set(ROOT_ANALYSIS_LIBRARIES
 )
 
 foreach(target analyse_raw build_analysis_tree analyse_tree
-               build_calibration_spectra fit_calibration_peaks)
+               build_calibration_spectra fit_calibration_peaks
+               fit_energy_calibration)
     target_link_libraries(${target} PRIVATE ${ROOT_ANALYSIS_LIBRARIES})
     target_compile_options(${target} PRIVATE
         $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic>

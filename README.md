@@ -27,6 +27,7 @@ build/analyse_tree
 build/analyse_raw
 build/build_calibration_spectra
 build/fit_calibration_peaks
+build/fit_energy_calibration
 ```
 
 To perform a completely clean rebuild:
@@ -105,9 +106,41 @@ GROUP  ENERGY_KEV  LABEL  SEARCH_HALF_WIDTH_KEV  FIT_HALF_WIDTH_KEV
 ```
 
 Comment out a line to omit it or adjust its windows when a nearby contaminant
-requires a different fit. This stage intentionally does not yet select a
-polynomial or write `.cal`/`.mcal` coefficients; it preserves the peak
-measurements needed to make and audit that decision.
+requires a different fit. The `SeedAlignment` tree records the detector-wide
+affine correction used to move the old seed windows onto the new raw spectra.
+This accommodates a stale seed gain without using the old coefficients in the
+final calibration.
+
+### Fit the main energy calibration
+
+`fit_energy_calibration` converts the accepted raw centroids into the main
+raw-ADC-to-keV calibration:
+
+```bash
+build/fit_energy_calibration \
+    mid_source_peak_fits.root \
+    calibrations/midexp_main.mcal \
+    midexp_calibration_diagnostics.root \
+    --config calibration_models.txt \
+    --max-energy 2048
+```
+
+For detectors without an override, it robustly fits polynomial degrees 1--3
+and selects the simplest statistically supported model using BIC. Isolated
+outliers are excluded from the coefficient fit but retained in the diagnostic
+`CalibrationResiduals` tree with `used=false`.
+
+`calibration_models.txt` supplies explicit piecewise models for unusually
+non-linear detectors. The distributed configuration uses two continuous
+fourth-order pieces for detector 4 with a boundary near 1000 keV. The output
+is a single `.mcal` stage whose input is raw ADC; use it as `--mcal` without a
+preceding main `.cal` stage. Its final raw-ADC boundary corresponds to the
+requested maximum energy, so hits above the calibrated range are rejected.
+
+The diagnostic ROOT file contains the selected model and coefficients, every
+point and residual, excluded-point flags, and per-detector calibration,
+residual and fitted-curve graphs. The high-energy Co-56 points participate in
+the fit even when the output is limited to 2048 keV.
 
 ### Recommended two-stage analysis
 
