@@ -67,6 +67,17 @@ struct RawInterval {
     bool found = false;
 };
 
+struct ChannelAlignment {
+    double scale = 1.0;
+    double offset = 0.0;
+    double score = 0.0;
+};
+
+struct AlignmentInput {
+    TH1D* histogram = nullptr;
+    double predictedChannel = 0.0;
+};
+
 RawInterval locateEnergy(const GermaniumCalibration& calibration,
                          unsigned int detectorID,
                          double energyKeV,
@@ -124,6 +135,94 @@ double localGain(const GermaniumCalibration& calibration,
         static_cast<UShort_t>(detectorID), highChannel);
     if (!low.valid() || !high.valid() || highChannel == lowChannel) return 0.0;
     return (high.energy - low.energy) / (highChannel - lowChannel);
+}
+
+double peakExcessScore(TH1D& histogram, double channel)
+{
+    const int centre = histogram.GetXaxis()->FindBin(channel);
+    if (centre < 16 ||
+        centre > static_cast<int>(config::kIndividualGermaniumRawBins) - 16) {
+        return 0.0;
+    }
+
+    double peak = 0.0;
+    for (int offset = -2; offset <= 2; ++offset) {
+        peak = std::max(peak, histogram.GetBinContent(centre + offset));
+    }
+
+    double background = 0.0;
+    int backgroundBins = 0;
+    for (int offset = 6; offset <= 15; ++offset) {
+        background += histogram.GetBinContent(centre - offset);
+        background += histogram.GetBinContent(centre + offset);
+        backgroundBins += 2;
+    }
+    background /= static_cast<double>(backgroundBins);
+    const double excess = std::max(
+        0.0, (peak - background) / std::sqrt(std::max(1.0, background)));
+    return std::log1p(std::min(1000.0, excess));
+}
+
+double alignmentScore(const std::vector<AlignmentInput>& inputs,
+                      double scale,
+                      double offset)
+{
+    double score = 0.0;
+    for (const AlignmentInput& input : inputs) {
+        score += peakExcessScore(
+            *input.histogram, offset + scale*input.predictedChannel);
+    }
+    return score;
+}
+
+ChannelAlignment findChannelAlignment(
+    const std::vector<AlignmentInput>& inputs)
+{
+    ChannelAlignment best;
+    if (inputs.size() < 3) return best;
+
+    best.score = -1.0;
+    for (int scaleStep = 0; scaleStep <= 140; ++scaleStep) {
+        const double scale = 0.94 + 0.001*scaleStep;
+        for (int offsetStep = -20; offsetStep <= 20; ++offsetStep) {
+            const double offset = 2.0*offsetStep;
+            const double score = alignmentScore(inputs, scale, offset);
+            if (score > best.score) best = {scale, offset, score};
+        }
+    }
+
+    const ChannelAlignment coarse = best;
+    for (int scaleStep = -10; scaleStep <= 10; ++scaleStep) {
+        const double scale = coarse.scale + 0.0002*scaleStep;
+        for (int offsetStep = -12; offsetStep <= 12; ++offsetStep) {
+            const double offset = coarse.offset + 0.25*offsetStep;
+            const double score = alignmentScore(inputs, scale, offset);
+            if (score > best.score) best = {scale, offset, score};
+        }
+    }
+    return best;
+}
+
+RawInterval applyAlignment(RawInterval interval,
+                           const ChannelAlignment& alignment)
+{
+    interval.closestChannel = alignment.offset +
+        alignment.scale*interval.closestChannel;
+    interval.minimumChannel = alignment.offset +
+        alignment.scale*interval.minimumChannel;
+    interval.maximumChannel = alignment.offset +
+        alignment.scale*interval.maximumChannel;
+    return interval;
+}
+
+double alignedLocalGain(const GermaniumCalibration& calibration,
+                        unsigned int detectorID,
+                        double alignedChannel,
+                        const ChannelAlignment& alignment)
+{
+    const double seedChannel =
+        (alignedChannel - alignment.offset) / alignment.scale;
+    return localGain(calibration, detectorID, seedChannel) / alignment.scale;
 }
 
 } // namespace
@@ -245,6 +344,20 @@ int CalibrationPeakFitter::run(const std::string& inputFileName,
     fitTree.Branch("fitStatus", &fitStatus);
     fitTree.Branch("accepted", &accepted);
 
+    UShort_t alignmentDetectorID = 0;
+    double alignmentScale = 1.0;
+    double alignmentOffset = 0.0;
+    double alignmentFitScore = 0.0;
+    unsigned int alignmentPointCount = 0;
+    TTree alignmentTree(
+        "SeedAlignment",
+        "Detector-wide affine alignment applied to seed ADC positions");
+    alignmentTree.Branch("detectorID", &alignmentDetectorID);
+    alignmentTree.Branch("scale", &alignmentScale);
+    alignmentTree.Branch("offsetAdc", &alignmentOffset);
+    alignmentTree.Branch("score", &alignmentFitScore);
+    alignmentTree.Branch("pointCount", &alignmentPointCount);
+
     std::array<std::unique_ptr<TGraphErrors>, config::kGermaniumIdBins> graphs;
     std::array<unsigned int, config::kGermaniumIdBins> graphPoints{};
     for (unsigned int id = 0; id < graphs.size(); ++id) {
@@ -260,6 +373,32 @@ int CalibrationPeakFitter::run(const std::string& inputFileName,
     std::size_t acceptedFits = 0;
     for (unsigned int id = 0; id < config::kGermaniumIdBins; ++id) {
         detectorID = static_cast<UShort_t>(id);
+
+        std::vector<AlignmentInput> alignmentInputs;
+        alignmentInputs.reserve(peaks_.size());
+        for (const PeakDefinition& peak : peaks_) {
+            TH1D* histogram = dynamic_cast<TH1D*>(
+                inputFile.Get(spectrumPath(peak.group, id).c_str()));
+            if (histogram == nullptr || histogram->GetEntries() == 0.0) {
+                continue;
+            }
+            const RawInterval seedSearch = locateEnergy(
+                seedCalibration_, id, peak.energyKeV,
+                peak.searchHalfWidthKeV);
+            if (seedSearch.found) {
+                alignmentInputs.push_back(
+                    {histogram, seedSearch.closestChannel});
+            }
+        }
+        const ChannelAlignment alignment =
+            findChannelAlignment(alignmentInputs);
+        alignmentDetectorID = static_cast<UShort_t>(id);
+        alignmentScale = alignment.scale;
+        alignmentOffset = alignment.offset;
+        alignmentFitScore = alignment.score;
+        alignmentPointCount = static_cast<unsigned int>(alignmentInputs.size());
+        alignmentTree.Fill();
+
         for (const PeakDefinition& peak : peaks_) {
             ++attemptedFits;
             group = peak.group;
@@ -280,16 +419,17 @@ int CalibrationPeakFitter::run(const std::string& inputFileName,
                 continue;
             }
 
-            const RawInterval search = locateEnergy(
+            const RawInterval seedSearch = locateEnergy(
                 seedCalibration_, id, peak.energyKeV,
                 peak.searchHalfWidthKeV);
-            predictedAdc = search.closestChannel;
-            if (!search.found ||
-                search.closestDifferenceKeV > peak.searchHalfWidthKeV) {
+            if (!seedSearch.found ||
+                seedSearch.closestDifferenceKeV > peak.searchHalfWidthKeV) {
                 fitStatus = -3;
                 fitTree.Fill();
                 continue;
             }
+            const RawInterval search = applyAlignment(seedSearch, alignment);
+            predictedAdc = search.closestChannel;
 
             const int firstBin = histogram->GetXaxis()->FindBin(
                 search.minimumChannel);
@@ -303,8 +443,8 @@ int CalibrationPeakFitter::run(const std::string& inputFileName,
                 }
             }
             const double peakChannel = histogram->GetBinCenter(maximumBin);
-            const double gain = std::abs(localGain(
-                seedCalibration_, id, peakChannel));
+            const double gain = std::abs(alignedLocalGain(
+                seedCalibration_, id, peakChannel, alignment));
             if (gain <= 0.0 || maximumBin <= firstBin + 1 ||
                 maximumBin >= lastBin - 1) {
                 fitStatus = -4;
@@ -363,15 +503,17 @@ int CalibrationPeakFitter::run(const std::string& inputFileName,
 
             const double significance = amplitude /
                 std::sqrt(std::max(1.0, background));
-            const double fittedGain = std::abs(localGain(
-                seedCalibration_, id, centroidAdc));
+            const double amplitudeSignificance = amplitudeError > 0.0
+                ? amplitude/amplitudeError : 0.0;
+            const double fittedGain = std::abs(alignedLocalGain(
+                seedCalibration_, id, centroidAdc, alignment));
             const double sigmaKeV = sigmaAdc * fittedGain;
             accepted = fitStatus == 0 && std::isfinite(centroidAdc) &&
                 std::isfinite(centroidErrorAdc) && centroidErrorAdc > 0.0 &&
                 centroidAdc >= fitMinimum && centroidAdc <= fitMaximum &&
                 sigmaAdc > 0.25 && sigmaAdc < fitMaximum-fitMinimum &&
                 sigmaKeV >= 0.2 && sigmaKeV <= 3.0 &&
-                significance >= 5.0;
+                significance >= 5.0 && amplitudeSignificance >= 5.0;
             if (accepted) {
                 const int point = static_cast<int>(graphPoints[id]++);
                 graphs[id]->SetPoint(point, centroidAdc, referenceEnergyKeV);
@@ -386,6 +528,7 @@ int CalibrationPeakFitter::run(const std::string& inputFileName,
 
     outputFile.cd();
     fitTree.Write();
+    alignmentTree.Write();
     TDirectory* graphDirectory = outputFile.mkdir("CalibrationPoints");
     graphDirectory->cd();
     for (const auto& graph : graphs) graph->Write();
@@ -394,8 +537,9 @@ int CalibrationPeakFitter::run(const std::string& inputFileName,
     inputMetadata.Write();
     TNamed seedNote(
         "CalibrationPeakFitSeedNote",
-        "Seed calibration was used only to locate fit windows; fitted "
-        "centroids are measured in raw ADC channels");
+        "Seed calibration was used only to locate approximate fit windows; "
+        "a detector-wide affine ADC alignment was then applied, and fitted "
+        "centroids remain measured in raw ADC channels");
     seedNote.Write();
     outputFile.Close();
 
