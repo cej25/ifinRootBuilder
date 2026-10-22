@@ -286,6 +286,76 @@ void CalibrationPeakFitter::loadPeakDefinitions(const std::string& fileName)
     }
 }
 
+void CalibrationPeakFitter::loadAdcOverrides(const std::string& fileName)
+{
+    std::ifstream file(fileName);
+    if (!file) {
+        throw std::runtime_error("Could not open ADC-override file '" +
+                                 fileName + "'");
+    }
+
+    adcOverrides_.clear();
+    std::string line;
+    std::size_t lineNumber = 0;
+    while (std::getline(file, line)) {
+        ++lineNumber;
+        if (!prepareDataLine(line)) continue;
+
+        AdcOverride override;
+        std::istringstream input(line);
+        std::string actionOrCentre;
+        if (!(input >> override.group >> override.detectorID >>
+              override.label >> actionOrCentre) ||
+            override.detectorID >= config::kGermaniumIdBins) {
+            throw parseError(fileName, lineNumber,
+                "expected GROUP DETECTOR_ID LABEL followed by either "
+                "skip or CENTRE_ADC SEARCH_HALF_ADC FIT_HALF_ADC");
+        }
+        if (actionOrCentre == "skip") {
+            override.skip = true;
+        } else {
+            std::size_t usedCharacters = 0;
+            try {
+                override.centreAdc = std::stod(
+                    actionOrCentre, &usedCharacters);
+            } catch (const std::exception&) {
+                throw parseError(fileName, lineNumber,
+                                 "invalid ADC centre or action");
+            }
+            if (usedCharacters != actionOrCentre.size() ||
+                !(input >> override.searchHalfWidthAdc >>
+                          override.fitHalfWidthAdc) ||
+                !std::isfinite(override.centreAdc) ||
+                !std::isfinite(override.searchHalfWidthAdc) ||
+                !std::isfinite(override.fitHalfWidthAdc) ||
+                override.centreAdc < 0.0 ||
+                override.searchHalfWidthAdc <= 0.0 ||
+                override.fitHalfWidthAdc <= 0.0 ||
+                override.fitHalfWidthAdc > override.searchHalfWidthAdc) {
+                throw parseError(fileName, lineNumber,
+                    "invalid raw-ADC override window");
+            }
+        }
+        std::string extra;
+        if (input >> extra) {
+            throw parseError(fileName, lineNumber,
+                             "unexpected extra value '" + extra + "'");
+        }
+        const auto duplicate = std::find_if(
+            adcOverrides_.begin(), adcOverrides_.end(),
+            [&override](const AdcOverride& existing) {
+                return existing.group == override.group &&
+                    existing.detectorID == override.detectorID &&
+                    existing.label == override.label;
+            });
+        if (duplicate != adcOverrides_.end()) {
+            throw parseError(fileName, lineNumber,
+                             "duplicate ADC override");
+        }
+        adcOverrides_.push_back(std::move(override));
+    }
+}
+
 int CalibrationPeakFitter::run(const std::string& inputFileName,
                                const std::string& outputFileName) const
 {
@@ -419,16 +489,42 @@ int CalibrationPeakFitter::run(const std::string& inputFileName,
                 continue;
             }
 
-            const RawInterval seedSearch = locateEnergy(
-                seedCalibration_, id, peak.energyKeV,
-                peak.searchHalfWidthKeV);
-            if (!seedSearch.found ||
-                seedSearch.closestDifferenceKeV > peak.searchHalfWidthKeV) {
-                fitStatus = -3;
+            const auto adcOverride = std::find_if(
+                adcOverrides_.begin(), adcOverrides_.end(),
+                [id, &peak](const AdcOverride& candidate) {
+                    return candidate.detectorID == id &&
+                        candidate.group == peak.group &&
+                        candidate.label == peak.label;
+                });
+
+            RawInterval search;
+            double overrideFitHalfWidthAdc = 0.0;
+            const bool usesAdcOverride = adcOverride != adcOverrides_.end();
+            if (usesAdcOverride && adcOverride->skip) {
+                fitStatus = -5;
                 fitTree.Fill();
                 continue;
             }
-            const RawInterval search = applyAlignment(seedSearch, alignment);
+            if (usesAdcOverride) {
+                search.found = true;
+                search.closestChannel = adcOverride->centreAdc;
+                search.minimumChannel = adcOverride->centreAdc -
+                    adcOverride->searchHalfWidthAdc;
+                search.maximumChannel = adcOverride->centreAdc +
+                    adcOverride->searchHalfWidthAdc;
+                overrideFitHalfWidthAdc = adcOverride->fitHalfWidthAdc;
+            } else {
+                const RawInterval seedSearch = locateEnergy(
+                    seedCalibration_, id, peak.energyKeV,
+                    peak.searchHalfWidthKeV);
+                if (!seedSearch.found ||
+                    seedSearch.closestDifferenceKeV > peak.searchHalfWidthKeV) {
+                    fitStatus = -3;
+                    fitTree.Fill();
+                    continue;
+                }
+                search = applyAlignment(seedSearch, alignment);
+            }
             predictedAdc = search.closestChannel;
 
             const int firstBin = histogram->GetXaxis()->FindBin(
@@ -443,8 +539,9 @@ int CalibrationPeakFitter::run(const std::string& inputFileName,
                 }
             }
             const double peakChannel = histogram->GetBinCenter(maximumBin);
-            const double gain = std::abs(alignedLocalGain(
-                seedCalibration_, id, peakChannel, alignment));
+            const double gain = usesAdcOverride ? 1.0 :
+                std::abs(alignedLocalGain(
+                    seedCalibration_, id, peakChannel, alignment));
             if (gain <= 0.0 || maximumBin <= firstBin + 1 ||
                 maximumBin >= lastBin - 1) {
                 fitStatus = -4;
@@ -452,7 +549,8 @@ int CalibrationPeakFitter::run(const std::string& inputFileName,
                 continue;
             }
             const double fitHalfWidthChannels = std::max(
-                3.0, peak.fitHalfWidthKeV / gain);
+                3.0, usesAdcOverride ? overrideFitHalfWidthAdc
+                                     : peak.fitHalfWidthKeV/gain);
             const double fitMinimum = std::max(
                 search.minimumChannel, peakChannel-fitHalfWidthChannels);
             const double fitMaximum = std::min(
@@ -505,14 +603,16 @@ int CalibrationPeakFitter::run(const std::string& inputFileName,
                 std::sqrt(std::max(1.0, background));
             const double amplitudeSignificance = amplitudeError > 0.0
                 ? amplitude/amplitudeError : 0.0;
-            const double fittedGain = std::abs(alignedLocalGain(
-                seedCalibration_, id, centroidAdc, alignment));
+            const double fittedGain = usesAdcOverride ? 1.0 :
+                std::abs(alignedLocalGain(
+                    seedCalibration_, id, centroidAdc, alignment));
             const double sigmaKeV = sigmaAdc * fittedGain;
             accepted = fitStatus == 0 && std::isfinite(centroidAdc) &&
                 std::isfinite(centroidErrorAdc) && centroidErrorAdc > 0.0 &&
                 centroidAdc >= fitMinimum && centroidAdc <= fitMaximum &&
                 sigmaAdc > 0.25 && sigmaAdc < fitMaximum-fitMinimum &&
-                sigmaKeV >= 0.2 && sigmaKeV <= 3.0 &&
+                (usesAdcOverride ||
+                 (sigmaKeV >= 0.2 && sigmaKeV <= 3.0)) &&
                 significance >= 5.0 && amplitudeSignificance >= 5.0;
             if (accepted) {
                 const int point = static_cast<int>(graphPoints[id]++);
@@ -539,7 +639,8 @@ int CalibrationPeakFitter::run(const std::string& inputFileName,
         "CalibrationPeakFitSeedNote",
         "Seed calibration was used only to locate approximate fit windows; "
         "a detector-wide affine ADC alignment was then applied, and fitted "
-        "centroids remain measured in raw ADC channels");
+        "centroids remain measured in raw ADC channels. Explicit ADC "
+        "overrides, when supplied, replace only their stated windows");
     seedNote.Write();
     outputFile.Close();
 

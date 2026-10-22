@@ -15,7 +15,8 @@ void printUsage(const char* program)
     std::cerr
         << "Usage: " << program
         << " INPUT.root OUTPUT.root PEAKS.txt --seed-cal FILE "
-        << "[--seed-mcal FILE] [--seed-cal FILE ...]\n\n"
+        << "[--seed-mcal FILE] [--adc-overrides FILE] "
+           "[--seed-cal FILE ...]\n\n"
         << "Seed stages are applied from left to right and are used only to "
         << "locate raw-ADC fit windows.\n";
 }
@@ -51,6 +52,11 @@ int main(int argc, char** argv)
                     throw std::runtime_error("--seed-mcal requires FILE");
                 }
                 fitter.addSeedMcalFile(argv[argument]);
+            } else if (option == "--adc-overrides") {
+                if (++argument >= argc) {
+                    throw std::runtime_error("--adc-overrides requires FILE");
+                }
+                fitter.loadAdcOverrides(argv[argument]);
             } else {
                 throw std::runtime_error("unknown option '" + option + "'");
             }

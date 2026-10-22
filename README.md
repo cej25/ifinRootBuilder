@@ -96,7 +96,8 @@ build/fit_calibration_peaks \
     mid_source_peak_fits.root \
     calibration_peaks.txt \
     --seed-cal calibrations/152Eu.cal \
-    --seed-mcal calibrations/pint_run_1-10.mcal
+    --seed-mcal calibrations/pint_run_1-10.mcal \
+    --adc-overrides calibration_peak_adc_overrides.txt
 ```
 
 The editable `calibration_peaks.txt` columns are:
@@ -110,6 +111,13 @@ requires a different fit. The `SeedAlignment` tree records the detector-wide
 affine correction used to move the old seed windows onto the new raw spectra.
 This accommodates a stale seed gain without using the old coefficients in the
 final calibration.
+
+`calibration_peak_adc_overrides.txt` provides detector- and peak-specific raw
+ADC windows when an old high-order seed turns over before reaching a real
+source line. The supplied entries recover detector 4's useful 2015.2-,
+2034.8- and 2598.5-keV Co-56 lines. A `skip` entry suppresses a known
+unreliable detector/peak combination. Window centres only locate peaks; they
+are not themselves calibration measurements.
 
 ### Fit the main energy calibration
 
