@@ -144,6 +144,12 @@ int CalibrationSpectrumBuilder::run(const std::string& outputFileName) const
             return 4;
         }
 
+        // Resolve and cache the global entry count before constructing the
+        // TTreeReader.  TChain::GetEntries() may change the chain's current
+        // underlying tree; calling it while a reader is active makes ROOT
+        // warn that the tree was switched outside TTreeReader.
+        const auto totalEntries = chain.GetEntries();
+
         provenanceGroup = group.name;
         TObjArray* files = chain.GetListOfFiles();
         for (int index = 0; index < files->GetEntries(); ++index) {
@@ -209,7 +215,7 @@ int CalibrationSpectrumBuilder::run(const std::string& outputFileName) const
         ULong64_t invalidGermaniumIDs = 0;
 
         std::cout << "Building calibration group " << group.name << " from "
-                  << chain.GetNtrees() << " file(s), " << chain.GetEntries()
+                  << chain.GetNtrees() << " file(s), " << totalEntries
                   << " events.\n";
 
         while (reader.Next()) {
@@ -252,7 +258,7 @@ int CalibrationSpectrumBuilder::run(const std::string& outputFileName) const
 
             if (inputEvents % 1000000ULL == 0ULL) {
                 std::cout << "  " << inputEvents << " / "
-                          << chain.GetEntries() << " events\r" << std::flush;
+                          << totalEntries << " events\r" << std::flush;
             }
         }
         std::cout << "  processed " << inputEvents << " events; accepted "
