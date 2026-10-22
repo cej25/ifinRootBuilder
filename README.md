@@ -225,9 +225,23 @@ between the nearest successful groups, or use the nearest successful group at
 an endpoint. These choices and all peak-fit results are recorded in
 `drift_calibration_diagnostics.root`.
 
+Detector 4 is treated as a controlled special case because its main
+piecewise source calibration has a repeatable response feature in the gap
+between source anchors. Its time-dependent offset and gain are fitted only
+with the stable 301-, 1015-, 1461-, and 1779-keV in-beam anchors (at least
+three spanning at least 700 keV). The median locations of the 536- and
+628-keV lines then define one smooth, time-independent shape correction. That
+correction is exactly zero below 301.57 keV and above 1000 keV, joins with
+zero slope at both boundaries, and is checked to remain monotonic. This keeps
+the stable drift fit from choosing different low-energy subsets in different
+groups while correcting the observed middle-energy curvature.
+
 The diagnostic `DriftSeedAlignment` tree stores the broad alignment for each
 detector and group. Re-running `fit_drift_calibration` never rereads the raw
 experimental trees; it operates only on `drift_spectra.root`.
+`DriftCorrectedPeakResiduals` stores both the affine-only and final residual
+for every accepted reference peak; its `shapeApplied` branch identifies the
+detector 4 entries inside the nonlinear-correction interval.
 
 Because run numbers repeat at different target distances, the command writes
 one existing-format run-by-run file per series:
@@ -240,6 +254,21 @@ calibrations/drift_20um.cal
 calibrations/drift_25um.cal
 ```
 
+For detector 4, the same command also writes one run-by-run piecewise file per
+series:
+
+```text
+calibrations/drift_9um_det4.mcal
+calibrations/drift_12um_det4.mcal
+calibrations/drift_15um_det4.mcal
+calibrations/drift_20um_det4.mcal
+calibrations/drift_25um_det4.mcal
+```
+
+Detector 4 is omitted from the corresponding `.cal` file because its affine
+drift and static shape adjustment are both contained in `_det4.mcal`. All
+other detector IDs are omitted from `_det4.mcal` and pass through unchanged.
+
 Apply the appropriate file after the main calibration when building each
 series of analysis trees. For example:
 
@@ -247,13 +276,16 @@ series of analysis trees. For example:
 build/build_analysis_tree analysed/9um \
     --mcal calibrations/midexp_main.mcal \
     --run-by-run-cal calibrations/drift_9um.cal \
+    --run-by-run-mcal calibrations/drift_9um_det4.mcal \
     --threads 24 \
     Run_9um_*.root
 ```
 
-The main `.mcal` converts raw ADC to energy; the generated `.cal` is a second,
-small correction whose input is that already-calibrated energy. Runs or
-detectors without a usable correction retain the main calibration.
+The main `.mcal` converts raw ADC to energy. The generated `.cal` and detector
+4 `.mcal` are second-stage corrections whose input is that already-calibrated
+energy. Supply the `.cal` first and `_det4.mcal` second as shown. Runs or
+detectors omitted from either fine-adjustment file retain the energy from the
+preceding stage.
 
 ### Recommended two-stage analysis
 

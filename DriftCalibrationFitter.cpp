@@ -118,6 +118,235 @@ struct PeakMeasurement {
     bool used = true;
 };
 
+struct AcceptedPeakRecord {
+    unsigned int groupIndex = 0;
+    unsigned int detectorID = 0;
+    double referenceEnergy = 0.0;
+    double measuredEnergy = 0.0;
+};
+
+constexpr unsigned int kNonlinearDriftDetectorID = 4;
+constexpr double kShapeLowerEnergyKeV = 301.570;
+constexpr double kShapeUpperEnergyKeV = 1000.0;
+constexpr double kFirstShapeAnchorKeV = 535.561;
+constexpr double kSecondShapeAnchorKeV = 627.540;
+
+bool useForDriftFit(unsigned int detectorID, double referenceEnergy)
+{
+    // Detector 4's main source calibration has a repeatable interpolation
+    // feature between the source anchors.  The 536- and 628-keV peaks must
+    // therefore measure that feature, not pull the time-dependent affine fit
+    // differently from one group to the next.
+    return detectorID != kNonlinearDriftDetectorID ||
+           referenceEnergy < 450.0 || referenceEnergy > 750.0;
+}
+
+double median(std::vector<double> values)
+{
+    if (values.empty()) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    const std::size_t middle = values.size()/2U;
+    std::nth_element(values.begin(), values.begin()+middle, values.end());
+    const double upper = values[middle];
+    if (values.size()%2U != 0U) return upper;
+    std::nth_element(values.begin(), values.begin()+middle-1U,
+                     values.begin()+middle);
+    return 0.5*(values[middle-1U]+upper);
+}
+
+struct ShapeCorrection {
+    bool valid = false;
+    double firstAnchorResidual = 0.0;
+    double secondAnchorResidual = 0.0;
+    std::array<double, 6> normalizedCoefficients{};
+};
+
+enum class CorrectionSource : int {
+    Measured = 0,
+    Interpolated = 1,
+    Nearest = 2,
+    Missing = 3
+};
+
+struct GroupCorrection {
+    bool valid = false;
+    CorrectionSource source = CorrectionSource::Missing;
+    double offset = 0.0;
+    double slope = 1.0;
+    double offsetError = 0.0;
+    double slopeError = 0.0;
+    double rms = 0.0;
+    unsigned int peakCount = 0;
+};
+
+bool solveFourByFour(std::array<std::array<long double, 5>, 4>& matrix,
+                     std::array<long double, 4>& solution)
+{
+    for (std::size_t column = 0; column < 4; ++column) {
+        std::size_t pivot = column;
+        for (std::size_t row = column+1; row < 4; ++row) {
+            if (std::abs(matrix[row][column]) >
+                std::abs(matrix[pivot][column])) {
+                pivot = row;
+            }
+        }
+        if (std::abs(matrix[pivot][column]) < 1.0e-18L) return false;
+        if (pivot != column) std::swap(matrix[pivot], matrix[column]);
+        const long double divisor = matrix[column][column];
+        for (std::size_t item = column; item < 5; ++item) {
+            matrix[column][item] /= divisor;
+        }
+        for (std::size_t row = 0; row < 4; ++row) {
+            if (row == column) continue;
+            const long double factor = matrix[row][column];
+            for (std::size_t item = column; item < 5; ++item) {
+                matrix[row][item] -= factor*matrix[column][item];
+            }
+        }
+    }
+    for (std::size_t row = 0; row < 4; ++row) {
+        solution[row] = matrix[row][4];
+    }
+    return true;
+}
+
+ShapeCorrection determineShapeCorrection(
+    const std::vector<AcceptedPeakRecord>& records,
+    const std::array<std::vector<GroupCorrection>,
+                     config::kGermaniumIdBins>& corrections)
+{
+    std::vector<double> firstResiduals;
+    std::vector<double> secondResiduals;
+    for (const AcceptedPeakRecord& record : records) {
+        if (record.detectorID != kNonlinearDriftDetectorID ||
+            record.groupIndex >= corrections[record.detectorID].size()) {
+            continue;
+        }
+        const GroupCorrection& correction =
+            corrections[record.detectorID][record.groupIndex];
+        if (!correction.valid) continue;
+        const double residual = correction.offset +
+            correction.slope*record.measuredEnergy-record.referenceEnergy;
+        if (std::abs(record.referenceEnergy-kFirstShapeAnchorKeV) < 0.1) {
+            firstResiduals.push_back(residual);
+        } else if (std::abs(record.referenceEnergy-
+                            kSecondShapeAnchorKeV) < 0.1) {
+            secondResiduals.push_back(residual);
+        }
+    }
+
+    ShapeCorrection result;
+    if (firstResiduals.size() < 20U || secondResiduals.size() < 20U) {
+        return result;
+    }
+    result.firstAnchorResidual = median(std::move(firstResiduals));
+    result.secondAnchorResidual = median(std::move(secondResiduals));
+    const long double span = kShapeUpperEnergyKeV-kShapeLowerEnergyKeV;
+    const long double firstInput =
+        kFirstShapeAnchorKeV+result.firstAnchorResidual;
+    const long double secondInput =
+        kSecondShapeAnchorKeV+result.secondAnchorResidual;
+    const long double firstT =
+        (firstInput-kShapeLowerEnergyKeV)/span;
+    const long double secondT =
+        (secondInput-kShapeLowerEnergyKeV)/span;
+    if (!(firstT > 0.0L && firstT < secondT && secondT < 1.0L)) {
+        return result;
+    }
+
+    // delta(t)=c2*t^2+...+c5*t^5.  Value and slope are zero at
+    // t=0 and t=1, while the two in-beam anchors set the interior shape.
+    std::array<std::array<long double, 5>, 4> equations{};
+    const auto fillValueRow = [&equations](std::size_t row, long double t,
+                                           long double value) {
+        long double power = t*t;
+        for (std::size_t column = 0; column < 4; ++column) {
+            equations[row][column] = power;
+            power *= t;
+        }
+        equations[row][4] = value;
+    };
+    fillValueRow(0, firstT, -result.firstAnchorResidual);
+    fillValueRow(1, secondT, -result.secondAnchorResidual);
+    equations[2] = {1.0L, 1.0L, 1.0L, 1.0L, 0.0L};
+    equations[3] = {2.0L, 3.0L, 4.0L, 5.0L, 0.0L};
+    std::array<long double, 4> solved{};
+    if (!solveFourByFour(equations, solved)) return result;
+    for (std::size_t index = 0; index < solved.size(); ++index) {
+        result.normalizedCoefficients[index+2U] =
+            static_cast<double>(solved[index]);
+    }
+
+    // Guard against an accidental non-monotonic energy calibration.
+    for (unsigned int step = 0; step <= 1000; ++step) {
+        const double t = static_cast<double>(step)/1000.0;
+        double derivative = 1.0;
+        double power = t;
+        for (std::size_t degree = 2; degree < 6; ++degree) {
+            derivative += degree*result.normalizedCoefficients[degree]*power/
+                          static_cast<double>(span);
+            power *= t;
+        }
+        if (!std::isfinite(derivative) || derivative <= 0.9 ||
+            derivative >= 1.1) {
+            return ShapeCorrection{};
+        }
+    }
+    result.valid = true;
+    return result;
+}
+
+std::array<double, 6> composeShapePolynomial(
+    const ShapeCorrection& shape, const GroupCorrection& correction)
+{
+    const long double span = kShapeUpperEnergyKeV-kShapeLowerEnergyKeV;
+    const long double constant =
+        (correction.offset-kShapeLowerEnergyKeV)/span;
+    const long double linear = correction.slope/span;
+    std::array<long double, 6> result{};
+    result[0] = correction.offset;
+    result[1] = correction.slope;
+    std::array<long double, 6> power{};
+    power[0] = 1.0L;
+    for (std::size_t degree = 0; degree < 6; ++degree) {
+        if (degree >= 2U) {
+            const long double coefficient =
+                shape.normalizedCoefficients[degree];
+            for (std::size_t item = 0; item < 6; ++item) {
+                result[item] += coefficient*power[item];
+            }
+        }
+        std::array<long double, 6> next{};
+        for (std::size_t item = 0; item < 6; ++item) {
+            next[item] += constant*power[item];
+            if (item+1U < 6U) next[item+1U] += linear*power[item];
+        }
+        power = next;
+    }
+    std::array<double, 6> converted{};
+    for (std::size_t index = 0; index < 6; ++index) {
+        converted[index] = static_cast<double>(result[index]);
+    }
+    return converted;
+}
+
+double applyShapeCorrection(const ShapeCorrection& shape, double energy)
+{
+    if (!shape.valid || energy <= kShapeLowerEnergyKeV ||
+        energy >= kShapeUpperEnergyKeV) {
+        return energy;
+    }
+    const double t = (energy-kShapeLowerEnergyKeV)/
+                     (kShapeUpperEnergyKeV-kShapeLowerEnergyKeV);
+    double delta = 0.0;
+    for (auto coefficient = shape.normalizedCoefficients.rbegin();
+         coefficient != shape.normalizedCoefficients.rend(); ++coefficient) {
+        delta = delta*t+*coefficient;
+    }
+    return energy+delta;
+}
+
 struct SpectrumAlignment {
     double scale = 1.0;
     double offset = 0.0;
@@ -268,24 +497,6 @@ LinearFit weightedLinearFit(std::vector<PeakMeasurement>& points,
     return result;
 }
 
-enum class CorrectionSource : int {
-    Measured = 0,
-    Interpolated = 1,
-    Nearest = 2,
-    Missing = 3
-};
-
-struct GroupCorrection {
-    bool valid = false;
-    CorrectionSource source = CorrectionSource::Missing;
-    double offset = 0.0;
-    double slope = 1.0;
-    double offsetError = 0.0;
-    double slopeError = 0.0;
-    double rms = 0.0;
-    unsigned int peakCount = 0;
-};
-
 void fillMissingCorrections(std::vector<GroupCorrection>& corrections)
 {
     std::vector<std::size_t> validIndices;
@@ -331,6 +542,12 @@ std::string correctionFileName(const std::string& prefix,
                                const std::string& series)
 {
     return prefix + "_" + series + ".cal";
+}
+
+std::string nonlinearCorrectionFileName(const std::string& prefix,
+                                        const std::string& series)
+{
+    return prefix + "_" + series + "_det4.mcal";
 }
 
 } // namespace
@@ -491,6 +708,7 @@ int DriftCalibrationFitter::run(const std::string& inputFileName,
     for (auto& detectorCorrections : corrections) {
         detectorCorrections.resize(groupCount);
     }
+    std::vector<AcceptedPeakRecord> acceptedPeakRecords;
 
     for (unsigned int group = 0; group < groupCount; ++group) {
         for (unsigned int detector = 0;
@@ -605,14 +823,25 @@ int DriftCalibrationFitter::run(const std::string& inputFileName,
                     fitSigma >= 0.2 && fitSigma <= 4.0 &&
                     amplitudeSignificance >= 5.0;
                 if (fitAccepted) {
-                    measurements.push_back({fitCentroid, fitCentroidError,
-                                            peak.energyKeV, true});
+                    acceptedPeakRecords.push_back({
+                        group, detector, peak.energyKeV, fitCentroid});
+                    if (useForDriftFit(detector, peak.energyKeV)) {
+                        measurements.push_back({fitCentroid, fitCentroidError,
+                                                peak.energyKeV, true});
+                    }
                 }
                 peakTree.Fill();
             }
 
+            const unsigned int minimumPoints =
+                detector == kNonlinearDriftDetectorID
+                    ? std::max(3U, minimumPeakCount_) : minimumPeakCount_;
+            const double minimumSpan =
+                detector == kNonlinearDriftDetectorID
+                    ? std::max(700.0, minimumEnergySpanKeV_)
+                    : minimumEnergySpanKeV_;
             LinearFit fit = weightedLinearFit(
-                measurements, minimumPeakCount_, minimumEnergySpanKeV_);
+                measurements, minimumPoints, minimumSpan);
             if (fit.valid) {
                 GroupCorrection& correction = corrections[detector][group];
                 correction.valid = true;
@@ -635,6 +864,62 @@ int DriftCalibrationFitter::run(const std::string& inputFileName,
     // DriftPeakFits retains every independently accepted or rejected peak.
     for (auto& detectorCorrections : corrections) {
         fillMissingCorrections(detectorCorrections);
+    }
+    const ShapeCorrection detector4Shape = determineShapeCorrection(
+        acceptedPeakRecords, corrections);
+    if (detector4Shape.valid) {
+        std::cout << "Detector 4: separated stable affine drift from the "
+                     "repeatable 536/628-keV response shape (median "
+                     "pre-shape residuals "
+                  << detector4Shape.firstAnchorResidual << " and "
+                  << detector4Shape.secondAnchorResidual << " keV).\n";
+    } else {
+        std::cerr << "Warning: detector 4 nonlinear correction could not be "
+                     "determined; writing its ordinary affine correction.\n";
+    }
+
+
+    unsigned int residualGroupIndex = 0;
+    UShort_t residualDetectorID = 0;
+    double residualReferenceEnergy = 0.0;
+    double residualMeasuredEnergy = 0.0;
+    double residualAffineEnergy = 0.0;
+    double residualAffineValue = 0.0;
+    double residualFinalEnergy = 0.0;
+    double residualFinalValue = 0.0;
+    bool residualShapeApplied = false;
+    TTree residualTree(
+        "DriftCorrectedPeakResiduals",
+        "Accepted peak residuals after affine and final drift corrections");
+    residualTree.Branch("groupIndex", &residualGroupIndex);
+    residualTree.Branch("detectorID", &residualDetectorID);
+    residualTree.Branch("referenceEnergyKeV", &residualReferenceEnergy);
+    residualTree.Branch("measuredEnergyKeV", &residualMeasuredEnergy);
+    residualTree.Branch("affineEnergyKeV", &residualAffineEnergy);
+    residualTree.Branch("affineResidualKeV", &residualAffineValue);
+    residualTree.Branch("finalEnergyKeV", &residualFinalEnergy);
+    residualTree.Branch("finalResidualKeV", &residualFinalValue);
+    residualTree.Branch("shapeApplied", &residualShapeApplied);
+    for (const AcceptedPeakRecord& record : acceptedPeakRecords) {
+        const GroupCorrection& correction =
+            corrections[record.detectorID][record.groupIndex];
+        if (!correction.valid) continue;
+        residualGroupIndex = record.groupIndex;
+        residualDetectorID = static_cast<UShort_t>(record.detectorID);
+        residualReferenceEnergy = record.referenceEnergy;
+        residualMeasuredEnergy = record.measuredEnergy;
+        residualAffineEnergy = correction.offset+
+            correction.slope*record.measuredEnergy;
+        residualAffineValue = residualAffineEnergy-record.referenceEnergy;
+        residualShapeApplied = detector4Shape.valid &&
+            record.detectorID == kNonlinearDriftDetectorID &&
+            residualAffineEnergy > kShapeLowerEnergyKeV &&
+            residualAffineEnergy < kShapeUpperEnergyKeV;
+        residualFinalEnergy = residualShapeApplied
+            ? applyShapeCorrection(detector4Shape, residualAffineEnergy)
+            : residualAffineEnergy;
+        residualFinalValue = residualFinalEnergy-record.referenceEnergy;
+        residualTree.Fill();
     }
 
     unsigned int correctionGroupIndex = 0;
@@ -732,6 +1017,10 @@ int DriftCalibrationFitter::run(const std::string& inputFileName,
         for (const FileRecord& file : seriesEntry.second) {
             for (unsigned int detector = 0;
                  detector < config::kGermaniumIdBins; ++detector) {
+                if (detector4Shape.valid &&
+                    detector == kNonlinearDriftDetectorID) {
+                    continue;
+                }
                 const GroupCorrection& correction =
                     corrections[detector][file.groupIndex];
                 if (!correction.valid) continue;
@@ -741,12 +1030,62 @@ int DriftCalibrationFitter::run(const std::string& inputFileName,
         }
         writtenFiles.push_back(fileName);
         std::cout << "Wrote " << fileName << ".\n";
+
+        if (detector4Shape.valid) {
+            const std::string nonlinearFileName =
+                nonlinearCorrectionFileName(outputPrefix, seriesEntry.first);
+            std::ofstream nonlinearOutput(nonlinearFileName);
+            if (!nonlinearOutput) {
+                throw std::runtime_error(
+                    "could not create correction file '" +
+                    nonlinearFileName + "'");
+            }
+            nonlinearOutput
+                << "# Detector 4 fine drift and static shape correction for "
+                << "series " << seriesEntry.first << '\n'
+                << "# Apply after the main calibration and the matching "
+                   "run-by-run .cal file.\n"
+                << "# RUN ID NPIECES "
+                   "[NCOEFF COEFFICIENTS... INPUT_END_KEV]...\n";
+            nonlinearOutput << std::setprecision(16);
+            for (const FileRecord& file : seriesEntry.second) {
+                const GroupCorrection& correction =
+                    corrections[kNonlinearDriftDetectorID][file.groupIndex];
+                if (!correction.valid) continue;
+                const double lowerInputBoundary =
+                    (kShapeLowerEnergyKeV-correction.offset)/correction.slope;
+                const double upperInputBoundary =
+                    (kShapeUpperEnergyKeV-correction.offset)/correction.slope;
+                if (!(lowerInputBoundary > 0.0 &&
+                      upperInputBoundary > lowerInputBoundary &&
+                      upperInputBoundary < config::kDriftEnergyMax)) {
+                    throw std::runtime_error(
+                        "detector 4 nonlinear correction has invalid piece "
+                        "boundaries for run " + std::to_string(file.run));
+                }
+                const std::array<double, 6> middle =
+                    composeShapePolynomial(detector4Shape, correction);
+                nonlinearOutput << file.run << ' '
+                    << kNonlinearDriftDetectorID << " 3 2 "
+                    << correction.offset << ' ' << correction.slope << ' '
+                    << lowerInputBoundary << " 6";
+                for (const double coefficient : middle) {
+                    nonlinearOutput << ' ' << coefficient;
+                }
+                nonlinearOutput << ' ' << upperInputBoundary << " 2 "
+                    << correction.offset << ' ' << correction.slope << ' '
+                    << config::kDriftEnergyMax << '\n';
+            }
+            writtenFiles.push_back(nonlinearFileName);
+            std::cout << "Wrote " << nonlinearFileName << ".\n";
+        }
     }
 
     diagnostics.cd();
     peakTree.Write();
     alignmentTree.Write();
     correctionTree.Write();
+    residualTree.Write();
     TDirectory* graphDirectory = diagnostics.mkdir("CorrectionGraphs");
     graphDirectory->cd();
     for (unsigned int detector = 0;
@@ -762,6 +1101,25 @@ int DriftCalibrationFitter::run(const std::string& inputFileName,
         "0=measured, 1=interpolated between measured groups, "
         "2=nearest measured group, 3=missing");
     sourceKey.Write();
+    if (detector4Shape.valid) {
+        std::ostringstream description;
+        description << std::setprecision(12)
+            << "Detector 4 uses stable affine anchors outside 450--750 keV. "
+               "A static smooth correction is zero in value and slope at "
+            << kShapeLowerEnergyKeV << " and " << kShapeUpperEnergyKeV
+            << " keV; median affine residuals at " << kFirstShapeAnchorKeV
+            << " and " << kSecondShapeAnchorKeV << " keV were "
+            << detector4Shape.firstAnchorResidual << " and "
+            << detector4Shape.secondAnchorResidual
+            << " keV. Normalized delta coefficients c0..c5: ";
+        for (const double coefficient :
+             detector4Shape.normalizedCoefficients) {
+            description << coefficient << ' ';
+        }
+        TNamed detector4Metadata(
+            "Detector4NonlinearDriftCorrection", description.str().c_str());
+        detector4Metadata.Write();
+    }
     diagnostics.Close();
     std::cout << "Wrote diagnostics to " << diagnosticFileName << ".\n";
     return 0;

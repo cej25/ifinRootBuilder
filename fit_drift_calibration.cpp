@@ -39,7 +39,9 @@ void printUsage(const char* program)
         << "Usage: " << program
         << " DRIFT_SPECTRA.root OUTPUT_PREFIX DIAGNOSTICS.root "
            "DRIFT_PEAKS.txt [OPTIONS]\n\n"
-        << "Writes OUTPUT_PREFIX_SERIES.cal for every input series. Options:\n"
+        << "Writes OUTPUT_PREFIX_SERIES.cal for every input series and, when "
+           "detector 4 anchors are available, "
+           "OUTPUT_PREFIX_SERIES_det4.mcal. Options:\n"
         << "  --minimum-peaks N       Minimum accepted anchors (default 2)\n"
         << "  --minimum-span KEV      Minimum anchor span (default 400)\n";
 }
