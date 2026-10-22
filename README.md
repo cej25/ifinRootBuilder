@@ -26,6 +26,7 @@ build/build_analysis_tree
 build/analyse_tree
 build/analyse_raw
 build/build_calibration_spectra
+build/fit_calibration_peaks
 ```
 
 To perform a completely clean rebuild:
@@ -75,6 +76,38 @@ CalibrationSpectrumSettings
 Repeating a group name adds another input pattern to that group. The
 `--no-ge-time-gate` option is available for diagnostics but should not normally
 be used for the final calibration spectra.
+
+### Fit calibration-source peaks
+
+`fit_calibration_peaks` measures source-peak centroids in the raw per-detector
+spectra. It writes every attempted fit to the `PeakFits` tree, including the
+raw-ADC centroid and uncertainty, width, amplitude, background, chi-square,
+degrees of freedom, fit status, and acceptance flag. Accepted measurements are
+also written as one `TGraphErrors` per detector under `CalibrationPoints`.
+
+An existing calibration is supplied only to locate each fit window. Its
+coefficients neither constrain the fitted centroid nor enter the new
+calibration as measurements:
+
+```bash
+build/fit_calibration_peaks \
+    mid_source_spectra.root \
+    mid_source_peak_fits.root \
+    calibration_peaks.txt \
+    --seed-cal calibrations/152Eu.cal \
+    --seed-mcal calibrations/pint_run_1-10.mcal
+```
+
+The editable `calibration_peaks.txt` columns are:
+
+```text
+GROUP  ENERGY_KEV  LABEL  SEARCH_HALF_WIDTH_KEV  FIT_HALF_WIDTH_KEV
+```
+
+Comment out a line to omit it or adjust its windows when a nearby contaminant
+requires a different fit. This stage intentionally does not yet select a
+polynomial or write `.cal`/`.mcal` coefficients; it preserves the peak
+measurements needed to make and audit that decision.
 
 ### Recommended two-stage analysis
 

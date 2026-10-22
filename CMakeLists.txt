@@ -50,6 +50,12 @@ add_executable(build_calibration_spectra
     CalibrationSpectrumBuilder.cpp
 )
 
+add_executable(fit_calibration_peaks
+    fit_calibration_peaks.cpp
+    CalibrationPeakFitter.cpp
+    GermaniumCalibration.cpp
+)
+
 set(ROOT_ANALYSIS_LIBRARIES
     ROOT::Core
     ROOT::RIO
@@ -63,7 +69,7 @@ set(ROOT_ANALYSIS_LIBRARIES
 )
 
 foreach(target analyse_raw build_analysis_tree analyse_tree
-               build_calibration_spectra)
+               build_calibration_spectra fit_calibration_peaks)
     target_link_libraries(${target} PRIVATE ${ROOT_ANALYSIS_LIBRARIES})
     target_compile_options(${target} PRIVATE
         $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic>
