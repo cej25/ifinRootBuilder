@@ -450,6 +450,84 @@ double findMaximumAdc(const Model& model, double maximumEnergyKeV)
     throw std::runtime_error("calibration does not reach maximum energy");
 }
 
+double highEnergySlope(const std::vector<CalibrationPoint>& points,
+                       const std::vector<bool>& used)
+{
+    std::vector<std::size_t> ordered;
+    for (std::size_t index = 0; index < points.size(); ++index) {
+        if (used[index]) ordered.push_back(index);
+    }
+    std::sort(ordered.begin(), ordered.end(),
+              [&points](std::size_t left, std::size_t right) {
+                  return points[left].energyKeV < points[right].energyKeV;
+              });
+    if (ordered.size() > 5) ordered.erase(ordered.begin(), ordered.end()-5);
+
+    std::vector<double> slopes;
+    for (std::size_t first = 0; first < ordered.size(); ++first) {
+        for (std::size_t second = first+1; second < ordered.size(); ++second) {
+            const CalibrationPoint& low = points[ordered[first]];
+            const CalibrationPoint& high = points[ordered[second]];
+            const double adcDifference = high.adc-low.adc;
+            if (std::abs(adcDifference) < 10.0) continue;
+            const double slope =
+                (high.energyKeV-low.energyKeV)/adcDifference;
+            if (std::isfinite(slope) && slope > 0.0) slopes.push_back(slope);
+        }
+    }
+    if (slopes.empty()) {
+        throw std::runtime_error("could not estimate a high-energy slope");
+    }
+    return median(std::move(slopes));
+}
+
+void setMaximumRange(Model& model,
+                     const std::vector<CalibrationPoint>& points,
+                     double maximumEnergyKeV)
+{
+    std::size_t highestUsed = points.size();
+    for (std::size_t index = 0; index < points.size(); ++index) {
+        if (!model.used[index]) continue;
+        if (highestUsed == points.size() ||
+            points[index].energyKeV > points[highestUsed].energyKeV) {
+            highestUsed = index;
+        }
+    }
+    if (highestUsed == points.size()) {
+        throw std::runtime_error("calibration has no retained points");
+    }
+
+    if (points[highestUsed].energyKeV >= maximumEnergyKeV) {
+        model.pieces.back().endAdc = findMaximumAdc(
+            model, maximumEnergyKeV);
+        return;
+    }
+
+    // Never extrapolate a high-order polynomial beyond the final measured
+    // calibration point.  Such a polynomial can turn over even when all of
+    // its in-range residuals are good.  Continue instead with a short linear
+    // tail whose positive slope is the median of the highest-energy secants.
+    const double joinAdc = points[highestUsed].adc;
+    const double joinEnergy = evaluateModel(model, joinAdc);
+    const double slope = highEnergySlope(points, model.used);
+    if (joinEnergy >= maximumEnergyKeV) {
+        model.pieces.back().endAdc = findMaximumAdc(
+            model, maximumEnergyKeV);
+        return;
+    }
+    const double finalAdc = joinAdc +
+        (maximumEnergyKeV-joinEnergy)/slope;
+    if (!std::isfinite(finalAdc) || finalAdc <= joinAdc ||
+        finalAdc >= config::kIndividualGermaniumRawBins) {
+        throw std::runtime_error("invalid high-energy linear extension");
+    }
+    model.pieces.back().endAdc = joinAdc;
+    model.pieces.push_back({
+        {joinEnergy-slope*joinAdc, slope}, finalAdc
+    });
+    model.description += " plus linear high-energy extension";
+}
+
 std::map<unsigned int, Override> loadOverrides(const std::string& fileName)
 {
     std::map<unsigned int, Override> overrides;
@@ -563,8 +641,7 @@ int EnergyCalibrationFitter::run(
                 if (candidate.bic < selected.bic) selected = std::move(candidate);
             }
         }
-        selected.pieces.back().endAdc = findMaximumAdc(
-            selected, maximumEnergyKeV_);
+        setMaximumRange(selected, points[id], maximumEnergyKeV_);
         std::cout << "Detector " << std::setw(2) << id << ": "
                   << selected.description << ", RMS "
                   << std::fixed << std::setprecision(3)

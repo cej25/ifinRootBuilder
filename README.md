@@ -140,7 +140,10 @@ requested maximum energy, so hits above the calibrated range are rejected.
 The diagnostic ROOT file contains the selected model and coefficients, every
 point and residual, excluded-point flags, and per-detector calibration,
 residual and fitted-curve graphs. The high-energy Co-56 points participate in
-the fit even when the output is limited to 2048 keV.
+the fit even when the output is limited to 2048 keV. If a detector's final
+accepted source line lies just below that limit, the program adds a short,
+continuous linear extension based on the robust high-energy slope instead of
+extrapolating a high-order polynomial beyond its measured range.
 
 ### Recommended two-stage analysis
 
