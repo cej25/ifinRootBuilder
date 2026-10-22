@@ -45,6 +45,11 @@ add_executable(analyse_tree
     ${HISTOGRAM_SOURCES}
 )
 
+add_executable(build_calibration_spectra
+    build_calibration_spectra.cpp
+    CalibrationSpectrumBuilder.cpp
+)
+
 set(ROOT_ANALYSIS_LIBRARIES
     ROOT::Core
     ROOT::RIO
@@ -57,7 +62,8 @@ set(ROOT_ANALYSIS_LIBRARIES
     Threads::Threads
 )
 
-foreach(target analyse_raw build_analysis_tree analyse_tree)
+foreach(target analyse_raw build_analysis_tree analyse_tree
+               build_calibration_spectra)
     target_link_libraries(${target} PRIVATE ${ROOT_ANALYSIS_LIBRARIES})
     target_compile_options(${target} PRIVATE
         $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic>

@@ -25,6 +25,7 @@ The executables are:
 build/build_analysis_tree
 build/analyse_tree
 build/analyse_raw
+build/build_calibration_spectra
 ```
 
 To perform a completely clean rebuild:
@@ -36,6 +37,44 @@ cmake --build build -j
 ```
 
 ## Usage
+
+### Build raw calibration spectra
+
+`build_calibration_spectra` combines named groups of source trees without
+modifying or physically merging the input files. It writes a 16,384-channel
+raw ADC spectrum for each Ge detector, an ID-versus-ADC matrix, input-file
+provenance and processing counters. The normal valid-Ge timing gate is applied;
+BGO vetoing, silicon conditions and energy calibration are not applied.
+
+Quote every wildcard so ROOT, rather than the shell, expands it as one named
+group. For the current experiment's mid-run sources:
+
+```bash
+build/build_calibration_spectra mid_source_spectra.root \
+    --group Mid_Eu152 \
+    '/data4/cj0041/IFIN-HH/102Mo/rootbuild/Calibrations/152Eu_midexp_*.root' \
+    --group Mid_Co56 \
+    '/data4/cj0041/IFIN-HH/102Mo/rootbuild/Calibrations/56Co_midexp_*.root' \
+    --group Mid_Co60 \
+    '/data4/cj0041/IFIN-HH/102Mo/rootbuild/Calibrations/60Co_midexp_*.root'
+```
+
+The output structure is:
+
+```text
+Mid_Eu152/Raw/h2_Ge_IDvADC
+Mid_Eu152/Raw/h1_Ge_ADC
+Mid_Eu152/Raw/Individual/h1_Ge_ADC_ID00 ... ID24
+Mid_Co56/Raw/...
+Mid_Co60/Raw/...
+CalibrationGroups
+CalibrationInputFiles
+CalibrationSpectrumSettings
+```
+
+Repeating a group name adds another input pattern to that group. The
+`--no-ge-time-gate` option is available for diagnostics but should not normally
+be used for the final calibration spectra.
 
 ### Recommended two-stage analysis
 
