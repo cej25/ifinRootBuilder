@@ -28,6 +28,8 @@ build/analyse_raw
 build/build_calibration_spectra
 build/fit_calibration_peaks
 build/fit_energy_calibration
+build/build_drift_spectra
+build/fit_drift_calibration
 ```
 
 To perform a completely clean rebuild:
@@ -152,6 +154,98 @@ the fit even when the output is limited to 2048 keV. If a detector's final
 accepted source line lies just below that limit, the program adds a short,
 continuous linear extension based on the robust high-energy slope instead of
 extrapolating a high-order polynomial beyond its measured range.
+
+### Fit experiment-wide gain drift
+
+After making the main source calibration, `build_drift_spectra` applies it to
+the experimental trees and accumulates high-resolution calibrated spectra in
+successive chronological groups. Input blocks are processed in command-line
+order, not alphabetically across the whole experiment. Each block starts a new
+group, and the default group size is ten files.
+
+For the present experiment:
+
+```bash
+build/build_drift_spectra drift_spectra.root \
+    --mcal calibrations/midexp_main.mcal \
+    --group-size 10 \
+    --threads 24 \
+    --break-before 9um 213 \
+    --block 9um 1 642 \
+      '/data4/cj0041/IFIN-HH/102Mo/rootbuild/9um/Run_9um_*.root' \
+    --block 12um 1 634 \
+      '/data4/cj0041/IFIN-HH/102Mo/rootbuild/12um/Run_12um_*.root' \
+    --block 15um 1 363 \
+      '/data4/cj0041/IFIN-HH/102Mo/rootbuild/15um/Run_15um_*.root' \
+    --block 15um 364 575 \
+      '/data4/cj0041/IFIN-HH/102Mo/rootbuild/15um/Run_15um_*.root' \
+    --block 20um 1 1275 \
+      '/data4/cj0041/IFIN-HH/102Mo/rootbuild/20um/Run_20um_*.root' \
+    --block 25um 1 700 \
+      '/data4/cj0041/IFIN-HH/102Mo/rootbuild/25um/Run_25um_*.root'
+```
+
+The explicit boundary before `9um` run 213 prevents one ten-file spectrum
+from averaging across the known detector-2 gain jump. If inspection shows
+that the jump occurs immediately after run 213, change it to
+`--break-before 9um 214` and rebuild the drift spectra.
+
+Fit the unshifted reference peaks and create the fine corrections with:
+
+```bash
+build/fit_drift_calibration \
+    drift_spectra.root \
+    calibrations/drift \
+    drift_calibration_diagnostics.root \
+    drift_peaks.txt
+```
+
+The supplied `drift_peaks.txt` contains the 136.269-, 165.400- and
+301.570-keV Ta-181 lines, the 535.561-keV Mo-100 line, the provisional
+627.540-keV Sn-114 line, and the 1014.520-, 1460.820- and 1778.987-keV
+activation/background references. Each line has:
+
+```text
+ENERGY_KEV LABEL SEARCH_HALF_WIDTH_KEV FIT_HALF_WIDTH_KEV [EXCLUDED_IDS]
+```
+
+Detector IDs in the final comma-separated field are not offered that peak.
+The distributed file excludes detector 4 from the 136- and 165-keV anchors.
+
+For every detector and ten-file group, the fitter measures all usable peaks
+and robustly determines the affine fine adjustment
+`E_corrected = C0 + C1*E_main`. A fit requires at least two accepted peaks
+spanning at least 400 keV by default. Isolated residuals above 1.5 keV are
+removed while enough anchors remain. Missing group fits are interpolated
+between the nearest successful groups, or use the nearest successful group at
+an endpoint. These choices and all peak-fit results are recorded in
+`drift_calibration_diagnostics.root`.
+
+Because run numbers repeat at different target distances, the command writes
+one existing-format run-by-run file per series:
+
+```text
+calibrations/drift_9um.cal
+calibrations/drift_12um.cal
+calibrations/drift_15um.cal
+calibrations/drift_20um.cal
+calibrations/drift_25um.cal
+```
+
+Apply the appropriate file after the main calibration when building each
+series of analysis trees. For example:
+
+```bash
+build/build_analysis_tree analysed/9um \
+    --mcal calibrations/midexp_main.mcal \
+    --run-by-run-cal calibrations/drift_9um.cal \
+    --threads 24 \
+    Run_9um_*.root
+```
+
+The main `.mcal` converts raw ADC to energy; the generated `.cal` is a second,
+small correction whose input is that already-calibrated energy. Runs or
+detectors without a usable correction retain the main calibration.
 
 ### Recommended two-stage analysis
 

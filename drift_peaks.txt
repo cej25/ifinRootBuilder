@@ -1,0 +1,14 @@
+# ENERGY_KEV  LABEL       SEARCH_HALF_WIDTH_KEV  FIT_HALF_WIDTH_KEV  EXCLUDED_IDS
+#
+# The correction fit uses the unshifted component at the literature energy.
+# Use '-' when no detector is excluded. Detector 4 omits the two lowest-energy
+# anchors because its main calibration is extrapolated in that region.
+
+136.269   Ta181_136    4.0  2.5  4
+165.400   Ta181_165    4.0  2.5  4
+301.570   Ta181_302    5.0  3.0  -
+535.561   Mo100_536    5.0  3.0  -
+627.540   Sn114_628    5.0  3.0  -
+1014.520  Al27_1015    6.0  3.5  -
+1460.820  K40_1461     6.0  3.5  -
+1778.987  Si28_1779    6.0  3.5  -

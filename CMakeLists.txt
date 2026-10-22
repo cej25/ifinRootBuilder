@@ -61,6 +61,18 @@ add_executable(fit_energy_calibration
     EnergyCalibrationFitter.cpp
 )
 
+add_executable(build_drift_spectra
+    build_drift_spectra.cpp
+    DriftSpectrumBuilder.cpp
+    GermaniumCalibration.cpp
+    RunCalibrationManager.cpp
+)
+
+add_executable(fit_drift_calibration
+    fit_drift_calibration.cpp
+    DriftCalibrationFitter.cpp
+)
+
 set(ROOT_ANALYSIS_LIBRARIES
     ROOT::Core
     ROOT::RIO
@@ -75,7 +87,8 @@ set(ROOT_ANALYSIS_LIBRARIES
 
 foreach(target analyse_raw build_analysis_tree analyse_tree
                build_calibration_spectra fit_calibration_peaks
-               fit_energy_calibration)
+               fit_energy_calibration build_drift_spectra
+               fit_drift_calibration)
     target_link_libraries(${target} PRIVATE ${ROOT_ANALYSIS_LIBRARIES})
     target_compile_options(${target} PRIVATE
         $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic>
