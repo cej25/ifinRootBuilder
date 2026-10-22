@@ -76,28 +76,35 @@ RawInterval locateEnergy(const GermaniumCalibration& calibration,
     const double lowEnergy = energyKeV - halfWidthKeV;
     const double highEnergy = energyKeV + halfWidthKeV;
 
+    // Use only the first contiguous raw-ADC interval that maps into the
+    // requested energy window.  High-order seed polynomials can turn over at
+    // large ADC values and produce additional, non-physical roots.  Merging
+    // those disconnected roots would create an enormous fit window.
+    unsigned int previousInsideChannel = 0;
     for (unsigned int channel = 0;
          channel < config::kIndividualGermaniumRawBins; ++channel) {
         const auto result = calibration.calibrate(
             static_cast<UShort_t>(detectorID), static_cast<double>(channel));
-        if (!result.valid()) continue;
-
-        const double difference = std::abs(result.energy - energyKeV);
-        if (difference < interval.closestDifferenceKeV) {
-            interval.closestDifferenceKeV = difference;
-            interval.closestChannel = static_cast<double>(channel);
-        }
-        if (result.energy >= lowEnergy && result.energy <= highEnergy) {
+        const bool inside = result.valid() &&
+            result.energy >= lowEnergy && result.energy <= highEnergy;
+        if (inside) {
             if (!interval.found) {
                 interval.minimumChannel = static_cast<double>(channel);
                 interval.maximumChannel = static_cast<double>(channel);
                 interval.found = true;
+            } else if (channel != previousInsideChannel + 1U) {
+                break;
             } else {
-                interval.minimumChannel = std::min(
-                    interval.minimumChannel, static_cast<double>(channel));
-                interval.maximumChannel = std::max(
-                    interval.maximumChannel, static_cast<double>(channel));
+                interval.maximumChannel = static_cast<double>(channel);
             }
+            const double difference = std::abs(result.energy - energyKeV);
+            if (difference < interval.closestDifferenceKeV) {
+                interval.closestDifferenceKeV = difference;
+                interval.closestChannel = static_cast<double>(channel);
+            }
+            previousInsideChannel = channel;
+        } else if (interval.found) {
+            break;
         }
     }
     return interval;
@@ -276,11 +283,8 @@ int CalibrationPeakFitter::run(const std::string& inputFileName,
             const RawInterval search = locateEnergy(
                 seedCalibration_, id, peak.energyKeV,
                 peak.searchHalfWidthKeV);
-            const RawInterval fitRange = locateEnergy(
-                seedCalibration_, id, peak.energyKeV,
-                peak.fitHalfWidthKeV);
             predictedAdc = search.closestChannel;
-            if (!search.found || !fitRange.found ||
+            if (!search.found ||
                 search.closestDifferenceKeV > peak.searchHalfWidthKeV) {
                 fitStatus = -3;
                 fitTree.Fill();
@@ -299,10 +303,21 @@ int CalibrationPeakFitter::run(const std::string& inputFileName,
                 }
             }
             const double peakChannel = histogram->GetBinCenter(maximumBin);
-            const double fitMinimum = fitRange.minimumChannel;
-            const double fitMaximum = fitRange.maximumChannel;
-            if (peakChannel < fitMinimum || peakChannel > fitMaximum ||
-                fitMaximum - fitMinimum < 4.0) {
+            const double gain = std::abs(localGain(
+                seedCalibration_, id, peakChannel));
+            if (gain <= 0.0 || maximumBin <= firstBin + 1 ||
+                maximumBin >= lastBin - 1) {
+                fitStatus = -4;
+                fitTree.Fill();
+                continue;
+            }
+            const double fitHalfWidthChannels = std::max(
+                3.0, peak.fitHalfWidthKeV / gain);
+            const double fitMinimum = std::max(
+                search.minimumChannel, peakChannel-fitHalfWidthChannels);
+            const double fitMaximum = std::min(
+                search.maximumChannel, peakChannel+fitHalfWidthChannels);
+            if (fitMaximum - fitMinimum < 4.0) {
                 fitStatus = -4;
                 fitTree.Fill();
                 continue;
@@ -314,8 +329,6 @@ int CalibrationPeakFitter::run(const std::string& inputFileName,
                 (histogram->GetBinContent(lowBin) +
                  histogram->GetBinContent(highBin));
             const double peakHeight = histogram->GetBinContent(maximumBin);
-            const double gain = std::abs(localGain(
-                seedCalibration_, id, peakChannel));
             const double initialSigma = std::clamp(
                 gain > 0.0 ? 0.9 / gain : 2.0, 0.5, 15.0);
 
@@ -350,10 +363,14 @@ int CalibrationPeakFitter::run(const std::string& inputFileName,
 
             const double significance = amplitude /
                 std::sqrt(std::max(1.0, background));
+            const double fittedGain = std::abs(localGain(
+                seedCalibration_, id, centroidAdc));
+            const double sigmaKeV = sigmaAdc * fittedGain;
             accepted = fitStatus == 0 && std::isfinite(centroidAdc) &&
                 std::isfinite(centroidErrorAdc) && centroidErrorAdc > 0.0 &&
                 centroidAdc >= fitMinimum && centroidAdc <= fitMaximum &&
                 sigmaAdc > 0.25 && sigmaAdc < fitMaximum-fitMinimum &&
+                sigmaKeV >= 0.2 && sigmaKeV <= 3.0 &&
                 significance >= 5.0;
             if (accepted) {
                 const int point = static_cast<int>(graphPoints[id]++);
