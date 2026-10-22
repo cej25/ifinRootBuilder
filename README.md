@@ -213,13 +213,21 @@ Detector IDs in the final comma-separated field are not offered that peak.
 The distributed file excludes detector 4 from the 136- and 165-keV anchors.
 
 For every detector and ten-file group, the fitter measures all usable peaks
-and robustly determines the affine fine adjustment
+after first performing a broad detector/group-wide affine alignment of the
+reference pattern. The alignment searches gain scales from approximately
+0.94 to 1.06 and offsets of approximately -15 to +15 keV, so a real gain jump
+cannot place all of the true peaks outside their individual local windows.
+The locally fitted centroids then robustly determine the affine fine adjustment
 `E_corrected = C0 + C1*E_main`. A fit requires at least two accepted peaks
 spanning at least 400 keV by default. Isolated residuals above 1.5 keV are
 removed while enough anchors remain. Missing group fits are interpolated
 between the nearest successful groups, or use the nearest successful group at
 an endpoint. These choices and all peak-fit results are recorded in
 `drift_calibration_diagnostics.root`.
+
+The diagnostic `DriftSeedAlignment` tree stores the broad alignment for each
+detector and group. Re-running `fit_drift_calibration` never rereads the raw
+experimental trees; it operates only on `drift_spectra.root`.
 
 Because run numbers repeat at different target distances, the command writes
 one existing-format run-by-run file per series:

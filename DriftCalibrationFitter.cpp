@@ -118,6 +118,80 @@ struct PeakMeasurement {
     bool used = true;
 };
 
+struct SpectrumAlignment {
+    double scale = 1.0;
+    double offset = 0.0;
+    double score = 0.0;
+};
+
+double peakExcessScore(TH1D& histogram, double energy)
+{
+    const int centre = histogram.GetXaxis()->FindBin(energy);
+    // All configured anchors are well inside the 0--2048 keV spectrum, even
+    // at the limits of the alignment search, so the sidebands remain valid.
+
+    double peak = 0.0;
+    for (int offset = -4; offset <= 4; ++offset) {
+        peak = std::max(peak, histogram.GetBinContent(centre+offset));
+    }
+    double background = 0.0;
+    int backgroundBins = 0;
+    for (int offset = 16; offset <= 32; ++offset) {
+        background += histogram.GetBinContent(centre-offset);
+        background += histogram.GetBinContent(centre+offset);
+        backgroundBins += 2;
+    }
+    background /= static_cast<double>(backgroundBins);
+    const double significance = std::max(
+        0.0, (peak-background)/std::sqrt(std::max(1.0, background)));
+    return std::log1p(std::min(1000.0, significance));
+}
+
+double alignmentScore(TH1D& histogram,
+                      const std::vector<double>& referenceEnergies,
+                      double scale,
+                      double offset)
+{
+    double score = 0.0;
+    for (const double reference : referenceEnergies) {
+        score += peakExcessScore(histogram, offset+scale*reference);
+    }
+    return score;
+}
+
+SpectrumAlignment findSpectrumAlignment(
+    TH1D& histogram, const std::vector<double>& referenceEnergies)
+{
+    SpectrumAlignment best;
+    if (referenceEnergies.size() < 2) return best;
+    best.score = -1.0;
+
+    // actual spectrum energy = offset + scale*reference energy.  The broad
+    // first pass is deliberately capable of finding the approximately 4%
+    // detector-2 jump present before 9um run 213.
+    for (int scaleStep = 0; scaleStep <= 60; ++scaleStep) {
+        const double scale = 0.94+0.002*scaleStep;
+        for (int offsetStep = -15; offsetStep <= 15; ++offsetStep) {
+            const double offset = static_cast<double>(offsetStep);
+            const double score = alignmentScore(
+                histogram, referenceEnergies, scale, offset);
+            if (score > best.score) best = {scale, offset, score};
+        }
+    }
+
+    const SpectrumAlignment coarse = best;
+    for (int scaleStep = -10; scaleStep <= 10; ++scaleStep) {
+        const double scale = coarse.scale+0.0002*scaleStep;
+        for (int offsetStep = -10; offsetStep <= 10; ++offsetStep) {
+            const double offset = coarse.offset+0.1*offsetStep;
+            const double score = alignmentScore(
+                histogram, referenceEnergies, scale, offset);
+            if (score > best.score) best = {scale, offset, score};
+        }
+    }
+    return best;
+}
+
 struct LinearFit {
     bool valid = false;
     double offset = 0.0;
@@ -398,6 +472,20 @@ int DriftCalibrationFitter::run(const std::string& inputFileName,
     peakTree.Branch("fitStatus", &fitStatus);
     peakTree.Branch("accepted", &fitAccepted);
 
+    unsigned int alignmentGroupIndex = 0;
+    UShort_t alignmentDetectorID = 0;
+    double alignmentScale = 1.0;
+    double alignmentOffset = 0.0;
+    double alignmentFitScore = 0.0;
+    TTree alignmentTree(
+        "DriftSeedAlignment",
+        "Detector/group affine alignment used to locate drift peaks");
+    alignmentTree.Branch("groupIndex", &alignmentGroupIndex);
+    alignmentTree.Branch("detectorID", &alignmentDetectorID);
+    alignmentTree.Branch("scale", &alignmentScale);
+    alignmentTree.Branch("offsetKeV", &alignmentOffset);
+    alignmentTree.Branch("score", &alignmentFitScore);
+
     std::array<std::vector<GroupCorrection>, config::kGermaniumIdBins>
         corrections;
     for (auto& detectorCorrections : corrections) {
@@ -410,6 +498,26 @@ int DriftCalibrationFitter::run(const std::string& inputFileName,
             TH1D* histogram = dynamic_cast<TH1D*>(
                 inputFile.Get(spectrumPath(group, detector).c_str()));
             std::vector<PeakMeasurement> measurements;
+
+            std::vector<double> alignmentEnergies;
+            if (histogram != nullptr && histogram->GetEntries() > 0.0) {
+                for (const PeakDefinition& peak : peaks_) {
+                    if (peak.excludedDetectorIDs.count(detector) == 0U) {
+                        alignmentEnergies.push_back(peak.energyKeV);
+                    }
+                }
+            }
+            const SpectrumAlignment alignment =
+                histogram == nullptr
+                    ? SpectrumAlignment{}
+                    : findSpectrumAlignment(*histogram, alignmentEnergies);
+            alignmentGroupIndex = group;
+            alignmentDetectorID = static_cast<UShort_t>(detector);
+            alignmentScale = alignment.scale;
+            alignmentOffset = alignment.offset;
+            alignmentFitScore = alignment.score;
+            alignmentTree.Fill();
+
             for (const PeakDefinition& peak : peaks_) {
                 fitGroupIndex = group;
                 fitDetectorID = static_cast<UShort_t>(detector);
@@ -432,10 +540,12 @@ int DriftCalibrationFitter::run(const std::string& inputFileName,
                     continue;
                 }
 
+                const double predictedEnergy =
+                    alignment.offset+alignment.scale*peak.energyKeV;
                 const double searchMinimum =
-                    peak.energyKeV-peak.searchHalfWidthKeV;
+                    predictedEnergy-peak.searchHalfWidthKeV;
                 const double searchMaximum =
-                    peak.energyKeV+peak.searchHalfWidthKeV;
+                    predictedEnergy+peak.searchHalfWidthKeV;
                 const int firstBin = histogram->GetXaxis()->FindBin(searchMinimum);
                 const int lastBin = histogram->GetXaxis()->FindBin(searchMaximum);
                 int maximumBin = firstBin;
@@ -490,7 +600,7 @@ int DriftCalibrationFitter::run(const std::string& inputFileName,
                 fitAccepted = fitStatus == 0 && std::isfinite(fitCentroid) &&
                     std::isfinite(fitCentroidError) &&
                     fitCentroidError > 0.0 && fitCentroidError <= 1.0 &&
-                    std::abs(fitCentroid-peak.energyKeV) <=
+                    std::abs(fitCentroid-predictedEnergy) <=
                         peak.searchHalfWidthKeV &&
                     fitSigma >= 0.2 && fitSigma <= 4.0 &&
                     amplitudeSignificance >= 5.0;
@@ -635,6 +745,7 @@ int DriftCalibrationFitter::run(const std::string& inputFileName,
 
     diagnostics.cd();
     peakTree.Write();
+    alignmentTree.Write();
     correctionTree.Write();
     TDirectory* graphDirectory = diagnostics.mkdir("CorrectionGraphs");
     graphDirectory->cd();
