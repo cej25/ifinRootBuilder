@@ -1,0 +1,9 @@
+# Detector-specific response-model overrides.
+#
+# Syntax:
+#   DETECTOR_ID  piecewise  BOUNDARY_ENERGY_KEV  LOWER_DEGREE  UPPER_DEGREE
+#
+# Detectors not listed here are fitted automatically with the simplest
+# adequate polynomial chosen from degrees 1, 2 and 3.
+
+4  piecewise  1000.0  4  4

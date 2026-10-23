@@ -1,0 +1,11 @@
+# Optional raw-ADC windows for peaks that cannot be located through the old
+# seed calibration.  These affect only the stated detector and peak.
+#
+# GROUP       DETECTOR_ID  LABEL        CENTRE_ADC  SEARCH_HALF_ADC  FIT_HALF_ADC
+# or:
+# GROUP       DETECTOR_ID  LABEL        skip
+
+Mid_Co56      4            Co56_1964    skip
+Mid_Co56      4            Co56_2015    2919        10               7
+Mid_Co56      4            Co56_2035    2948        10               7
+Mid_Co56      4            Co56_2599    3762        12               8

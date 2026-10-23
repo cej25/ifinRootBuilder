@@ -1,0 +1,20 @@
+# Coincidence gates. All windows use MIN <= energy < MAX.
+# NAME PROMPT_MIN PROMPT_MAX LOWER_MIN LOWER_MAX UPPER_MIN UPPER_MAX
+
+[Symmetric]
+Gate296 292 300 283 290 310 318
+
+[AllvFW]
+# Example:
+# Gate596 592 600 580 588 604 612
+
+[AllvBW]
+# Example:
+# Gate596 592 600 580 588 604 612
+
+[Double]
+# Require at least three accepted gamma rays. A gamma in REQUIRED_MIN--MAX is
+# removed, the remaining gamma rays form a symmetric matrix, and the second
+# prompt/sideband gate produces the double-gated spectrum.
+# NAME REQUIRED_MIN REQUIRED_MAX PROMPT_MIN PROMPT_MAX LOWER_MIN LOWER_MAX UPPER_MIN UPPER_MAX
+# DoubleGateExample 390 410 540 560 520 535 565 580
