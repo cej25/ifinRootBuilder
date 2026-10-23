@@ -236,14 +236,14 @@ Detector 4 is treated as a controlled special case because its main
 piecewise source calibration has a repeatable response feature in the gap
 between source anchors. Its time-dependent offset and gain are fitted only
 with the stable 301-, 1015-, 1461-, and 1779-keV in-beam anchors (at least
-three spanning at least 700 keV). The 536- and 628-keV residuals then define a
-separate shape correction for each group. Each measured value is blended with
-a robust seven-group local trajectory, while isolated residual outliers and
-missing anchors use that trajectory directly. Every correction is exactly
-zero below 301.57 keV and above 1000 keV, joins with zero slope at both
-boundaries, and is checked to remain monotonic. This follows detector 4's
-changing middle-energy curvature without allowing it to destabilise the
-offset and gain fit.
+three spanning at least 700 keV). Residuals at the 301-, 536-, 628-, 1015-,
+1461- and 1779-keV references then define a full-range piecewise-linear
+correction for each group. Each measured residual is blended with a robust
+seven-group local trajectory, while isolated false fits and missing anchors
+use that trajectory directly. Segment slopes are checked for monotonicity and
+reasonable scale. This follows detector 4's changing response over the full
+analysis range without allowing false centroids such as the group-33
+1015-keV fit to enter the calibration.
 
 Detector 16 is also checked group by group for nonlinear drift. Mild curvature
 may use a guarded quadratic correction. For the sharp response change seen in
@@ -257,11 +257,13 @@ The diagnostic `DriftSeedAlignment` tree stores the broad alignment for each
 detector and group. Re-running `fit_drift_calibration` never rereads the raw
 experimental trees; it operates only on `drift_spectra.root`.
 `DriftCorrectedPeakResiduals` stores both the affine-only and final residual
-for every accepted reference peak. Its `shapeApplied` and `quadraticApplied`
-branches, plus `piecewiseApplied`, identify detector-4 and detector-16
-nonlinear corrections.
-`Detector4ShapeCorrections` and `Detector16PolynomialCorrections` record the
-group-by-group choices and coefficients.
+for every accepted reference peak. Its `detector4PiecewiseApplied`,
+`quadraticApplied` and `piecewiseApplied` branches identify the nonlinear
+corrections. `detector4TrajectoryDifferenceKeV` and
+`detector4TrajectoryOutlier` distinguish false fitted centroids from points
+that were allowed to follow the detector-4 time trajectory.
+`Detector4PiecewiseCorrections` and
+`Detector16PolynomialCorrections` record the group-by-group choices.
 
 Because run numbers repeat at different target distances, the command writes
 one existing-format run-by-run file per series:
@@ -287,7 +289,8 @@ calibrations/drift_25um_det4.mcal
 ```
 
 Detector 4 is omitted from the corresponding `.cal` file because its affine
-drift and time-dependent shape adjustment are both contained in `_det4.mcal`.
+drift and time-dependent full-range adjustment are both contained in
+`_det4.mcal`.
 Detector 16 is also omitted for the individual runs that require its
 piecewise-linear correction; those entries are stored in the same `.mcal`.
 Other detector/run combinations pass through unchanged.
