@@ -9,6 +9,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -33,6 +34,25 @@ double parseDouble(const std::string& text, const std::string& description)
     return value;
 }
 
+std::vector<std::string> parseSeriesOrder(const std::string& text)
+{
+    std::vector<std::string> result;
+    std::size_t start = 0;
+    while (start <= text.size()) {
+        const std::size_t comma = text.find(',', start);
+        const std::string item = text.substr(
+            start, comma == std::string::npos ? std::string::npos
+                                               : comma-start);
+        if (item.empty()) {
+            throw std::runtime_error("empty series in --series-order");
+        }
+        result.push_back(item);
+        if (comma == std::string::npos) break;
+        start = comma+1;
+    }
+    return result;
+}
+
 void printUsage(const char* program)
 {
     std::cerr
@@ -40,10 +60,12 @@ void printUsage(const char* program)
         << " DRIFT_SPECTRA.root OUTPUT_PREFIX DIAGNOSTICS.root "
            "DRIFT_PEAKS.txt [OPTIONS]\n\n"
         << "Writes OUTPUT_PREFIX_SERIES.cal for every input series and, when "
-           "detector 4 anchors are available, "
+           "nonlinear detector 4/16 corrections are needed, "
            "OUTPUT_PREFIX_SERIES_det4.mcal. Options:\n"
         << "  --minimum-peaks N       Minimum accepted anchors (default 2)\n"
-        << "  --minimum-span KEV      Minimum anchor span (default 400)\n";
+        << "  --minimum-span KEV      Minimum anchor span (default 400)\n"
+        << "  --series-order LIST     Chronological comma-separated series "
+           "order\n";
 }
 
 } // namespace
@@ -73,6 +95,12 @@ int main(int argc, char** argv)
                 }
                 fitter.setMinimumEnergySpan(
                     parseDouble(argv[argument], "minimum energy span"));
+            } else if (option == "--series-order") {
+                if (++argument >= argc) {
+                    throw std::runtime_error(
+                        "--series-order requires a comma-separated list");
+                }
+                fitter.setSeriesOrder(parseSeriesOrder(argv[argument]));
             } else {
                 throw std::runtime_error("unknown option '" + option + "'");
             }

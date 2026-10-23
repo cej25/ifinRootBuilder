@@ -10,6 +10,7 @@ public:
     void loadPeakDefinitions(const std::string& fileName);
     void setMinimumPeakCount(unsigned int count);
     void setMinimumEnergySpan(double energySpanKeV);
+    void setSeriesOrder(const std::vector<std::string>& seriesOrder);
     int run(const std::string& inputFileName,
             const std::string& outputPrefix,
             const std::string& diagnosticFileName) const;
@@ -25,6 +26,7 @@ private:
 
     unsigned int minimumPeakCount_ = 2;
     double minimumEnergySpanKeV_ = 400.0;
+    std::vector<std::string> seriesOrder_;
     std::vector<PeakDefinition> peaks_;
 };
 

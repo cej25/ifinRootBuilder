@@ -179,10 +179,10 @@ build/build_drift_spectra drift_spectra.root \
       '/data4/cj0041/IFIN-HH/102Mo/rootbuild/15um/Run_15um_*.root' \
     --block 15um 364 575 \
       '/data4/cj0041/IFIN-HH/102Mo/rootbuild/15um/Run_15um_*.root' \
-    --block 20um 1 1275 \
-      '/data4/cj0041/IFIN-HH/102Mo/rootbuild/20um/Run_20um_*.root' \
     --block 25um 1 700 \
-      '/data4/cj0041/IFIN-HH/102Mo/rootbuild/25um/Run_25um_*.root'
+      '/data4/cj0041/IFIN-HH/102Mo/rootbuild/25um/Run_25um_*.root' \
+    --block 20um 1 1275 \
+      '/data4/cj0041/IFIN-HH/102Mo/rootbuild/20um/Run_20um_*.root'
 ```
 
 The explicit boundary before `9um` run 213 prevents one ten-file spectrum
@@ -197,8 +197,15 @@ build/fit_drift_calibration \
     drift_spectra.root \
     calibrations/drift \
     drift_calibration_diagnostics.root \
-    drift_peaks.txt
+    drift_peaks.txt \
+    --series-order 9um,12um,15um,25um,20um
 ```
+
+`--series-order` controls interpolation and smoothing order independently of
+the order in which the existing `drift_spectra.root` was built. Therefore, an
+older drift file made with 20um before 25um can be refitted correctly without
+rereading the raw trees. New drift-spectrum files should still be built in the
+true acquisition order shown above.
 
 The supplied `drift_peaks.txt` contains the 136.269-, 165.400- and
 301.570-keV Ta-181 lines, the 535.561-keV Mo-100 line, the provisional
@@ -229,19 +236,32 @@ Detector 4 is treated as a controlled special case because its main
 piecewise source calibration has a repeatable response feature in the gap
 between source anchors. Its time-dependent offset and gain are fitted only
 with the stable 301-, 1015-, 1461-, and 1779-keV in-beam anchors (at least
-three spanning at least 700 keV). The median locations of the 536- and
-628-keV lines then define one smooth, time-independent shape correction. That
-correction is exactly zero below 301.57 keV and above 1000 keV, joins with
-zero slope at both boundaries, and is checked to remain monotonic. This keeps
-the stable drift fit from choosing different low-energy subsets in different
-groups while correcting the observed middle-energy curvature.
+three spanning at least 700 keV). The 536- and 628-keV residuals then define a
+separate shape correction for each group. Each measured value is blended with
+a robust seven-group local trajectory, while isolated residual outliers and
+missing anchors use that trajectory directly. Every correction is exactly
+zero below 301.57 keV and above 1000 keV, joins with zero slope at both
+boundaries, and is checked to remain monotonic. This follows detector 4's
+changing middle-energy curvature without allowing it to destabilise the
+offset and gain fit.
+
+Detector 16 is also checked group by group for nonlinear drift. Mild curvature
+may use a guarded quadratic correction. For the sharp response change seen in
+the affected late-9um groups, an affine residual RMS above 0.8 keV selects a
+continuous piecewise-linear mapping through the accepted anchors, provided at
+least four anchors span 700 keV and every segment remains monotonic with a
+reasonable slope. This avoids forcing the localised change into one unstable
+high-order polynomial. Ordinary groups retain their affine correction.
 
 The diagnostic `DriftSeedAlignment` tree stores the broad alignment for each
 detector and group. Re-running `fit_drift_calibration` never rereads the raw
 experimental trees; it operates only on `drift_spectra.root`.
 `DriftCorrectedPeakResiduals` stores both the affine-only and final residual
-for every accepted reference peak; its `shapeApplied` branch identifies the
-detector 4 entries inside the nonlinear-correction interval.
+for every accepted reference peak. Its `shapeApplied` and `quadraticApplied`
+branches, plus `piecewiseApplied`, identify detector-4 and detector-16
+nonlinear corrections.
+`Detector4ShapeCorrections` and `Detector16PolynomialCorrections` record the
+group-by-group choices and coefficients.
 
 Because run numbers repeat at different target distances, the command writes
 one existing-format run-by-run file per series:
@@ -254,8 +274,9 @@ calibrations/drift_20um.cal
 calibrations/drift_25um.cal
 ```
 
-For detector 4, the same command also writes one run-by-run piecewise file per
-series:
+For nonlinear corrections, the same command also writes one run-by-run
+piecewise file per series (the historical `_det4` filename is retained for
+command-line compatibility):
 
 ```text
 calibrations/drift_9um_det4.mcal
@@ -266,8 +287,10 @@ calibrations/drift_25um_det4.mcal
 ```
 
 Detector 4 is omitted from the corresponding `.cal` file because its affine
-drift and static shape adjustment are both contained in `_det4.mcal`. All
-other detector IDs are omitted from `_det4.mcal` and pass through unchanged.
+drift and time-dependent shape adjustment are both contained in `_det4.mcal`.
+Detector 16 is also omitted for the individual runs that require its
+piecewise-linear correction; those entries are stored in the same `.mcal`.
+Other detector/run combinations pass through unchanged.
 
 Apply the appropriate file after the main calibration when building each
 series of analysis trees. For example:

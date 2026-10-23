@@ -126,6 +126,7 @@ struct AcceptedPeakRecord {
 };
 
 constexpr unsigned int kNonlinearDriftDetectorID = 4;
+constexpr unsigned int kQuadraticDriftDetectorID = 16;
 constexpr double kShapeLowerEnergyKeV = 301.570;
 constexpr double kShapeUpperEnergyKeV = 1000.0;
 constexpr double kFirstShapeAnchorKeV = 535.561;
@@ -180,6 +181,36 @@ struct GroupCorrection {
     unsigned int peakCount = 0;
 };
 
+struct PolynomialCorrection {
+    bool valid = false;
+    CorrectionSource source = CorrectionSource::Missing;
+    std::array<double, 3> coefficients{0.0, 1.0, 0.0};
+    double rms = 0.0;
+    unsigned int peakCount = 0;
+    bool nonlinear = false;
+};
+
+struct PiecewiseLinearCorrection {
+    bool valid = false;
+    std::vector<std::pair<double, double>> anchors;
+};
+
+double applyPiecewiseLinear(const PiecewiseLinearCorrection& correction,
+                            double energy)
+{
+    if (!correction.valid || correction.anchors.size() < 2U) return energy;
+    std::size_t low = 0;
+    while (low+2U < correction.anchors.size() &&
+           energy > correction.anchors[low+1U].first) {
+        ++low;
+    }
+    const auto& first = correction.anchors[low];
+    const auto& second = correction.anchors[low+1U];
+    const double slope = (second.second-first.second)/
+                         (second.first-first.first);
+    return first.second+slope*(energy-first.first);
+}
+
 bool solveFourByFour(std::array<std::array<long double, 5>, 4>& matrix,
                      std::array<long double, 4>& solution)
 {
@@ -211,37 +242,15 @@ bool solveFourByFour(std::array<std::array<long double, 5>, 4>& matrix,
     return true;
 }
 
-ShapeCorrection determineShapeCorrection(
-    const std::vector<AcceptedPeakRecord>& records,
-    const std::array<std::vector<GroupCorrection>,
-                     config::kGermaniumIdBins>& corrections)
+ShapeCorrection makeShapeCorrection(double firstResidual,
+                                    double secondResidual)
 {
-    std::vector<double> firstResiduals;
-    std::vector<double> secondResiduals;
-    for (const AcceptedPeakRecord& record : records) {
-        if (record.detectorID != kNonlinearDriftDetectorID ||
-            record.groupIndex >= corrections[record.detectorID].size()) {
-            continue;
-        }
-        const GroupCorrection& correction =
-            corrections[record.detectorID][record.groupIndex];
-        if (!correction.valid) continue;
-        const double residual = correction.offset +
-            correction.slope*record.measuredEnergy-record.referenceEnergy;
-        if (std::abs(record.referenceEnergy-kFirstShapeAnchorKeV) < 0.1) {
-            firstResiduals.push_back(residual);
-        } else if (std::abs(record.referenceEnergy-
-                            kSecondShapeAnchorKeV) < 0.1) {
-            secondResiduals.push_back(residual);
-        }
-    }
-
     ShapeCorrection result;
-    if (firstResiduals.size() < 20U || secondResiduals.size() < 20U) {
+    if (!std::isfinite(firstResidual) || !std::isfinite(secondResidual)) {
         return result;
     }
-    result.firstAnchorResidual = median(std::move(firstResiduals));
-    result.secondAnchorResidual = median(std::move(secondResiduals));
+    result.firstAnchorResidual = firstResidual;
+    result.secondAnchorResidual = secondResidual;
     const long double span = kShapeUpperEnergyKeV-kShapeLowerEnergyKeV;
     const long double firstInput =
         kFirstShapeAnchorKeV+result.firstAnchorResidual;
@@ -294,6 +303,99 @@ ShapeCorrection determineShapeCorrection(
         }
     }
     result.valid = true;
+    return result;
+}
+
+std::vector<ShapeCorrection> determineShapeCorrections(
+    const std::vector<AcceptedPeakRecord>& records,
+    const std::array<std::vector<GroupCorrection>,
+                     config::kGermaniumIdBins>& corrections,
+    const std::vector<std::size_t>& chronologicalGroups)
+{
+    const std::size_t groupCount = chronologicalGroups.size();
+    const double missing = std::numeric_limits<double>::quiet_NaN();
+    std::vector<double> first(groupCount, missing);
+    std::vector<double> second(groupCount, missing);
+    std::vector<std::vector<double>> firstValues(groupCount);
+    std::vector<std::vector<double>> secondValues(groupCount);
+    for (const AcceptedPeakRecord& record : records) {
+        if (record.detectorID != kNonlinearDriftDetectorID ||
+            record.groupIndex >= groupCount) {
+            continue;
+        }
+        const GroupCorrection& correction =
+            corrections[record.detectorID][record.groupIndex];
+        if (!correction.valid) continue;
+        const double residual = correction.offset+
+            correction.slope*record.measuredEnergy-record.referenceEnergy;
+        if (!std::isfinite(residual) || std::abs(residual) > 8.0) continue;
+        if (std::abs(record.referenceEnergy-kFirstShapeAnchorKeV) < 0.1) {
+            firstValues[record.groupIndex].push_back(residual);
+        } else if (std::abs(record.referenceEnergy-
+                            kSecondShapeAnchorKeV) < 0.1) {
+            secondValues[record.groupIndex].push_back(residual);
+        }
+    }
+    for (std::size_t group = 0; group < groupCount; ++group) {
+        if (!firstValues[group].empty()) first[group] = median(firstValues[group]);
+        if (!secondValues[group].empty()) second[group] = median(secondValues[group]);
+    }
+
+    const auto smooth = [&chronologicalGroups](const std::vector<double>& raw) {
+        std::vector<double> result(raw.size(),
+            std::numeric_limits<double>::quiet_NaN());
+        std::vector<double> all;
+        for (double value : raw) if (std::isfinite(value)) all.push_back(value);
+        const double fallback = median(all);
+        for (std::size_t position = 0; position < chronologicalGroups.size();
+             ++position) {
+            std::vector<double> window;
+            const std::size_t begin = position > 3U ? position-3U : 0U;
+            const std::size_t end = std::min(
+                chronologicalGroups.size(), position+4U);
+            for (std::size_t neighbour = begin; neighbour < end; ++neighbour) {
+                const double value = raw[chronologicalGroups[neighbour]];
+                if (std::isfinite(value)) window.push_back(value);
+            }
+            if (window.empty()) {
+                result[chronologicalGroups[position]] = fallback;
+                continue;
+            }
+            const double centre = median(window);
+            std::vector<double> deviations;
+            deviations.reserve(window.size());
+            for (double value : window) {
+                deviations.push_back(std::abs(value-centre));
+            }
+            const double limit = std::max(0.6, 4.0*1.4826*median(deviations));
+            std::vector<double> retained;
+            for (double value : window) {
+                if (std::abs(value-centre) <= limit) retained.push_back(value);
+            }
+            const double localCentre = retained.empty() ? centre
+                                                        : median(retained);
+            const double current = raw[chronologicalGroups[position]];
+            if (std::isfinite(current) &&
+                std::abs(current-centre) <= limit) {
+                // Preserve genuine group-to-group curvature while damping
+                // centroid noise. Outliers and missing anchors use the robust
+                // local trajectory directly.
+                result[chronologicalGroups[position]] =
+                    0.65*current+0.35*localCentre;
+            } else {
+                result[chronologicalGroups[position]] = localCentre;
+            }
+        }
+        return result;
+    };
+
+    const std::vector<double> smoothedFirst = smooth(first);
+    const std::vector<double> smoothedSecond = smooth(second);
+    std::vector<ShapeCorrection> result(groupCount);
+    for (std::size_t group = 0; group < groupCount; ++group) {
+        result[group] = makeShapeCorrection(
+            smoothedFirst[group], smoothedSecond[group]);
+    }
     return result;
 }
 
@@ -431,6 +533,127 @@ struct LinearFit {
     unsigned int usedPoints = 0;
 };
 
+struct QuadraticFit {
+    bool valid = false;
+    std::array<double, 3> coefficients{0.0, 1.0, 0.0};
+    double rms = 0.0;
+    unsigned int usedPoints = 0;
+};
+
+bool solveThreeByThree(std::array<std::array<long double, 4>, 3>& matrix,
+                       std::array<long double, 3>& solution)
+{
+    for (std::size_t column = 0; column < 3; ++column) {
+        std::size_t pivot = column;
+        for (std::size_t row = column+1; row < 3; ++row) {
+            if (std::abs(matrix[row][column]) >
+                std::abs(matrix[pivot][column])) pivot = row;
+        }
+        if (std::abs(matrix[pivot][column]) < 1.0e-18L) return false;
+        if (pivot != column) std::swap(matrix[pivot], matrix[column]);
+        const long double divisor = matrix[column][column];
+        for (std::size_t item = column; item < 4; ++item) {
+            matrix[column][item] /= divisor;
+        }
+        for (std::size_t row = 0; row < 3; ++row) {
+            if (row == column) continue;
+            const long double factor = matrix[row][column];
+            for (std::size_t item = column; item < 4; ++item) {
+                matrix[row][item] -= factor*matrix[column][item];
+            }
+        }
+    }
+    for (std::size_t row = 0; row < 3; ++row) solution[row] = matrix[row][3];
+    return true;
+}
+
+double evaluatePolynomial(const std::array<double, 3>& coefficients,
+                          double energy)
+{
+    return coefficients[0]+energy*(coefficients[1]+energy*coefficients[2]);
+}
+
+QuadraticFit weightedQuadraticFit(std::vector<PeakMeasurement> points,
+                                  unsigned int minimumPoints,
+                                  double minimumSpan)
+{
+    QuadraticFit result;
+    for (unsigned int iteration = 0; iteration < 4; ++iteration) {
+        std::array<long double, 5> sums{};
+        std::array<long double, 3> right{};
+        double minimumEnergy = std::numeric_limits<double>::infinity();
+        double maximumEnergy = -std::numeric_limits<double>::infinity();
+        unsigned int count = 0;
+        for (const PeakMeasurement& point : points) {
+            if (!point.used) continue;
+            const long double x = point.measuredEnergy;
+            const long double y = point.referenceEnergy;
+            const long double uncertainty = std::max(0.03, point.measuredError);
+            const long double weight = 1.0L/(uncertainty*uncertainty);
+            long double power = 1.0L;
+            for (std::size_t degree = 0; degree < sums.size(); ++degree) {
+                sums[degree] += weight*power;
+                power *= x;
+            }
+            power = 1.0L;
+            for (std::size_t degree = 0; degree < right.size(); ++degree) {
+                right[degree] += weight*y*power;
+                power *= x;
+            }
+            minimumEnergy = std::min(minimumEnergy, point.referenceEnergy);
+            maximumEnergy = std::max(maximumEnergy, point.referenceEnergy);
+            ++count;
+        }
+        if (count < minimumPoints || maximumEnergy-minimumEnergy < minimumSpan) {
+            return result;
+        }
+        std::array<std::array<long double, 4>, 3> equations{};
+        for (std::size_t row = 0; row < 3; ++row) {
+            for (std::size_t column = 0; column < 3; ++column) {
+                equations[row][column] = sums[row+column];
+            }
+            equations[row][3] = right[row];
+        }
+        std::array<long double, 3> solved{};
+        if (!solveThreeByThree(equations, solved)) return result;
+        for (std::size_t index = 0; index < 3; ++index) {
+            result.coefficients[index] = static_cast<double>(solved[index]);
+        }
+        result.usedPoints = count;
+
+        double sumResidualSquared = 0.0;
+        double largestResidual = 0.0;
+        std::size_t largestIndex = points.size();
+        for (std::size_t index = 0; index < points.size(); ++index) {
+            if (!points[index].used) continue;
+            const double residual = points[index].referenceEnergy-
+                evaluatePolynomial(result.coefficients,
+                                   points[index].measuredEnergy);
+            sumResidualSquared += residual*residual;
+            if (std::abs(residual) > largestResidual) {
+                largestResidual = std::abs(residual);
+                largestIndex = index;
+            }
+        }
+        result.rms = std::sqrt(sumResidualSquared/static_cast<double>(count));
+        if (largestResidual <= 1.5 || count <= minimumPoints ||
+            largestIndex == points.size()) {
+            const double derivativeLow = result.coefficients[1];
+            const double derivativeHigh = result.coefficients[1]+
+                2.0*result.coefficients[2]*config::kDriftEnergyMax;
+            result.valid = std::isfinite(result.coefficients[0]) &&
+                std::isfinite(result.coefficients[1]) &&
+                std::isfinite(result.coefficients[2]) &&
+                derivativeLow > 0.94 && derivativeLow < 1.06 &&
+                derivativeHigh > 0.94 && derivativeHigh < 1.06 &&
+                std::abs(result.coefficients[0]) < 30.0 && result.rms <= 1.5;
+            return result;
+        }
+        points[largestIndex].used = false;
+    }
+    return result;
+}
+
 LinearFit weightedLinearFit(std::vector<PeakMeasurement>& points,
                             unsigned int minimumPoints,
                             double minimumSpan)
@@ -497,29 +720,81 @@ LinearFit weightedLinearFit(std::vector<PeakMeasurement>& points,
     return result;
 }
 
-void fillMissingCorrections(std::vector<GroupCorrection>& corrections)
+std::vector<std::size_t> chronologicalGroupOrder(
+    const std::vector<FileRecord>& files,
+    std::size_t groupCount,
+    const std::vector<std::string>& requestedSeriesOrder)
 {
-    std::vector<std::size_t> validIndices;
-    for (std::size_t index = 0; index < corrections.size(); ++index) {
-        if (corrections[index].valid) validIndices.push_back(index);
+    std::vector<std::string> encountered;
+    std::map<std::string, std::size_t> firstSeen;
+    std::vector<std::string> groupSeries(groupCount);
+    std::vector<unsigned int> groupRun(
+        groupCount, std::numeric_limits<unsigned int>::max());
+    for (const FileRecord& file : files) {
+        if (firstSeen.emplace(file.series, firstSeen.size()).second) {
+            encountered.push_back(file.series);
+        }
+        groupSeries[file.groupIndex] = file.series;
+        groupRun[file.groupIndex] = std::min(groupRun[file.groupIndex], file.run);
     }
-    if (validIndices.empty()) return;
+    std::map<std::string, std::size_t> rank;
+    for (const std::string& series : requestedSeriesOrder) {
+        if (!rank.emplace(series, rank.size()).second) {
+            throw std::runtime_error("duplicate series '"+series+
+                                     "' in --series-order");
+        }
+    }
+    for (const std::string& series : encountered) {
+        if (rank.count(series) == 0U) rank.emplace(series, rank.size());
+    }
+    for (const std::string& series : requestedSeriesOrder) {
+        if (firstSeen.count(series) == 0U) {
+            throw std::runtime_error("series '"+series+
+                                     "' in --series-order is not in input");
+        }
+    }
+    std::vector<std::size_t> order(groupCount);
+    for (std::size_t group = 0; group < groupCount; ++group) order[group] = group;
+    std::stable_sort(order.begin(), order.end(),
+        [&rank, &groupSeries, &groupRun](std::size_t left, std::size_t right) {
+            const std::size_t leftRank = rank.at(groupSeries[left]);
+            const std::size_t rightRank = rank.at(groupSeries[right]);
+            if (leftRank != rightRank) return leftRank < rightRank;
+            if (groupRun[left] != groupRun[right]) {
+                return groupRun[left] < groupRun[right];
+            }
+            return left < right;
+        });
+    return order;
+}
 
-    for (std::size_t index = 0; index < corrections.size(); ++index) {
+void fillMissingCorrections(std::vector<GroupCorrection>& corrections,
+                            const std::vector<std::size_t>& order)
+{
+    std::vector<std::size_t> validPositions;
+    for (std::size_t position = 0; position < order.size(); ++position) {
+        if (corrections[order[position]].valid) validPositions.push_back(position);
+    }
+    if (validPositions.empty()) return;
+
+    for (std::size_t position = 0; position < order.size(); ++position) {
+        const std::size_t index = order[position];
         if (corrections[index].valid) continue;
         const auto after = std::lower_bound(
-            validIndices.begin(), validIndices.end(), index);
-        if (after == validIndices.begin()) {
-            corrections[index] = corrections[*after];
+            validPositions.begin(), validPositions.end(), position);
+        if (after == validPositions.begin()) {
+            corrections[index] = corrections[order[*after]];
             corrections[index].source = CorrectionSource::Nearest;
-        } else if (after == validIndices.end()) {
-            corrections[index] = corrections[validIndices.back()];
+        } else if (after == validPositions.end()) {
+            corrections[index] = corrections[order[validPositions.back()]];
             corrections[index].source = CorrectionSource::Nearest;
         } else {
-            const std::size_t high = *after;
-            const std::size_t low = *(after-1);
-            const double fraction = static_cast<double>(index-low)/
-                                    static_cast<double>(high-low);
+            const std::size_t highPosition = *after;
+            const std::size_t lowPosition = *(after-1);
+            const std::size_t high = order[highPosition];
+            const std::size_t low = order[lowPosition];
+            const double fraction = static_cast<double>(position-lowPosition)/
+                                    static_cast<double>(highPosition-lowPosition);
             GroupCorrection interpolated;
             interpolated.valid = true;
             interpolated.source = CorrectionSource::Interpolated;
@@ -535,6 +810,46 @@ void fillMissingCorrections(std::vector<GroupCorrection>& corrections)
                 corrections[high].slopeError);
             corrections[index] = interpolated;
         }
+    }
+}
+
+void fillMissingPolynomialCorrections(
+    std::vector<PolynomialCorrection>& corrections,
+    const std::vector<std::size_t>& order)
+{
+    std::vector<std::size_t> validPositions;
+    for (std::size_t position = 0; position < order.size(); ++position) {
+        if (corrections[order[position]].valid) validPositions.push_back(position);
+    }
+    if (validPositions.empty()) return;
+    for (std::size_t position = 0; position < order.size(); ++position) {
+        const std::size_t index = order[position];
+        if (corrections[index].valid) continue;
+        const auto after = std::lower_bound(
+            validPositions.begin(), validPositions.end(), position);
+        if (after == validPositions.begin() || after == validPositions.end()) {
+            const std::size_t sourcePosition = after == validPositions.begin()
+                ? *after : validPositions.back();
+            corrections[index] = corrections[order[sourcePosition]];
+            corrections[index].source = CorrectionSource::Nearest;
+            continue;
+        }
+        const std::size_t highPosition = *after;
+        const std::size_t lowPosition = *(after-1);
+        const double fraction = static_cast<double>(position-lowPosition)/
+                                static_cast<double>(highPosition-lowPosition);
+        const PolynomialCorrection& low = corrections[order[lowPosition]];
+        const PolynomialCorrection& high = corrections[order[highPosition]];
+        PolynomialCorrection interpolated;
+        interpolated.valid = true;
+        interpolated.source = CorrectionSource::Interpolated;
+        for (std::size_t coefficient = 0; coefficient < 3; ++coefficient) {
+            interpolated.coefficients[coefficient] = low.coefficients[coefficient]+
+                fraction*(high.coefficients[coefficient]-
+                          low.coefficients[coefficient]);
+        }
+        interpolated.nonlinear = low.nonlinear || high.nonlinear;
+        corrections[index] = interpolated;
     }
 }
 
@@ -615,6 +930,15 @@ void DriftCalibrationFitter::setMinimumEnergySpan(double energySpanKeV)
     minimumEnergySpanKeV_ = energySpanKeV;
 }
 
+void DriftCalibrationFitter::setSeriesOrder(
+    const std::vector<std::string>& seriesOrder)
+{
+    if (seriesOrder.empty()) {
+        throw std::runtime_error("series order must not be empty");
+    }
+    seriesOrder_ = seriesOrder;
+}
+
 int DriftCalibrationFitter::run(const std::string& inputFileName,
                                 const std::string& outputPrefix,
                                 const std::string& diagnosticFileName) const
@@ -653,6 +977,16 @@ int DriftCalibrationFitter::run(const std::string& inputFileName,
         return 5;
     }
     const std::size_t groupCount = static_cast<std::size_t>(maximumGroup)+1U;
+    const std::vector<std::size_t> chronologicalGroups =
+        chronologicalGroupOrder(files, groupCount, seriesOrder_);
+    if (!seriesOrder_.empty()) {
+        std::cout << "Using requested chronological series order: ";
+        for (std::size_t index = 0; index < seriesOrder_.size(); ++index) {
+            if (index != 0U) std::cout << ", ";
+            std::cout << seriesOrder_[index];
+        }
+        std::cout << ".\n";
+    }
 
     TFile diagnostics(diagnosticFileName.c_str(), "RECREATE");
     if (diagnostics.IsZombie()) {
@@ -708,6 +1042,7 @@ int DriftCalibrationFitter::run(const std::string& inputFileName,
     for (auto& detectorCorrections : corrections) {
         detectorCorrections.resize(groupCount);
     }
+    std::vector<PolynomialCorrection> detector16Corrections(groupCount);
     std::vector<AcceptedPeakRecord> acceptedPeakRecords;
 
     for (unsigned int group = 0; group < groupCount; ++group) {
@@ -840,8 +1175,9 @@ int DriftCalibrationFitter::run(const std::string& inputFileName,
                 detector == kNonlinearDriftDetectorID
                     ? std::max(700.0, minimumEnergySpanKeV_)
                     : minimumEnergySpanKeV_;
-            LinearFit fit = weightedLinearFit(
-                measurements, minimumPoints, minimumSpan);
+            const std::vector<PeakMeasurement> originalMeasurements = measurements;
+            LinearFit fit = weightedLinearFit(measurements, minimumPoints,
+                                              minimumSpan);
             if (fit.valid) {
                 GroupCorrection& correction = corrections[detector][group];
                 correction.valid = true;
@@ -853,6 +1189,49 @@ int DriftCalibrationFitter::run(const std::string& inputFileName,
                 correction.rms = fit.rms;
                 correction.peakCount = fit.usedPoints;
 
+                if (detector == kQuadraticDriftDetectorID) {
+                    PolynomialCorrection& polynomial =
+                        detector16Corrections[group];
+                    polynomial.valid = true;
+                    polynomial.source = CorrectionSource::Measured;
+                    polynomial.coefficients = {fit.offset, fit.slope, 0.0};
+                    polynomial.rms = fit.rms;
+                    polynomial.peakCount = fit.usedPoints;
+                    const QuadraticFit quadratic = weightedQuadraticFit(
+                        originalMeasurements, std::max(4U, minimumPeakCount_),
+                        std::max(700.0, minimumEnergySpanKeV_));
+                    const double curvatureKeV = quadratic.valid
+                        ? std::abs(quadratic.coefficients[2])*0.25*
+                          config::kDriftEnergyMax*config::kDriftEnergyMax
+                        : 0.0;
+                    double linearAllSquared = 0.0;
+                    double quadraticAllSquared = 0.0;
+                    for (const PeakMeasurement& point : originalMeasurements) {
+                        const double linearResidual = point.referenceEnergy-
+                            (fit.offset+fit.slope*point.measuredEnergy);
+                        const double quadraticResidual = point.referenceEnergy-
+                            evaluatePolynomial(quadratic.coefficients,
+                                               point.measuredEnergy);
+                        linearAllSquared += linearResidual*linearResidual;
+                        quadraticAllSquared += quadraticResidual*
+                                               quadraticResidual;
+                    }
+                    const double allCount = static_cast<double>(
+                        originalMeasurements.size());
+                    const double linearAllRms = std::sqrt(
+                        linearAllSquared/std::max(1.0, allCount));
+                    const double quadraticAllRms = std::sqrt(
+                        quadraticAllSquared/std::max(1.0, allCount));
+                    if (quadratic.valid &&
+                        curvatureKeV >= 0.4 &&
+                        quadraticAllRms+0.15 < linearAllRms &&
+                        quadraticAllRms <= 0.8*linearAllRms) {
+                        polynomial.coefficients = quadratic.coefficients;
+                        polynomial.rms = quadratic.rms;
+                        polynomial.peakCount = quadratic.usedPoints;
+                        polynomial.nonlinear = true;
+                    }
+                }
             }
         }
         std::cout << "Fitted drift group " << group+1 << " / "
@@ -863,20 +1242,79 @@ int DriftCalibrationFitter::run(const std::string& inputFileName,
     // DriftCorrections is the authoritative record of the robust affine fit;
     // DriftPeakFits retains every independently accepted or rejected peak.
     for (auto& detectorCorrections : corrections) {
-        fillMissingCorrections(detectorCorrections);
+        fillMissingCorrections(detectorCorrections, chronologicalGroups);
     }
-    const ShapeCorrection detector4Shape = determineShapeCorrection(
-        acceptedPeakRecords, corrections);
-    if (detector4Shape.valid) {
-        std::cout << "Detector 4: separated stable affine drift from the "
-                     "repeatable 536/628-keV response shape (median "
-                     "pre-shape residuals "
-                  << detector4Shape.firstAnchorResidual << " and "
-                  << detector4Shape.secondAnchorResidual << " keV).\n";
+    fillMissingPolynomialCorrections(detector16Corrections,
+                                     chronologicalGroups);
+    std::vector<PiecewiseLinearCorrection> detector16Piecewise(groupCount);
+    for (std::size_t group = 0; group < groupCount; ++group) {
+        std::vector<std::pair<double, double>> anchors;
+        double affineSquared = 0.0;
+        for (const AcceptedPeakRecord& record : acceptedPeakRecords) {
+            if (record.groupIndex != group ||
+                record.detectorID != kQuadraticDriftDetectorID) continue;
+            anchors.emplace_back(record.measuredEnergy,
+                                 record.referenceEnergy);
+            const GroupCorrection& affine =
+                corrections[kQuadraticDriftDetectorID][group];
+            const double residual = affine.offset+
+                affine.slope*record.measuredEnergy-record.referenceEnergy;
+            affineSquared += residual*residual;
+        }
+        std::sort(anchors.begin(), anchors.end());
+        if (anchors.size() < 4U ||
+            anchors.back().second-anchors.front().second < 700.0) continue;
+        const double affineRms = std::sqrt(
+            affineSquared/static_cast<double>(anchors.size()));
+        if (affineRms < 0.8) continue;
+        bool monotonic = true;
+        for (std::size_t index = 0; index+1U < anchors.size(); ++index) {
+            const double inputSpan = anchors[index+1U].first-
+                                     anchors[index].first;
+            const double outputSpan = anchors[index+1U].second-
+                                      anchors[index].second;
+            const double slope = outputSpan/inputSpan;
+            if (!(inputSpan > 0.0 && slope > 0.9 && slope < 1.1)) {
+                monotonic = false;
+                break;
+            }
+        }
+        if (monotonic) {
+            detector16Piecewise[group].valid = true;
+            detector16Piecewise[group].anchors = std::move(anchors);
+            detector16Corrections[group].nonlinear = true;
+        }
+    }
+    const std::vector<ShapeCorrection> detector4Shapes =
+        determineShapeCorrections(acceptedPeakRecords, corrections,
+                                  chronologicalGroups);
+    const std::size_t validDetector4Shapes = static_cast<std::size_t>(
+        std::count_if(detector4Shapes.begin(), detector4Shapes.end(),
+            [](const ShapeCorrection& shape) { return shape.valid; }));
+    if (validDetector4Shapes != 0U) {
+        std::vector<double> firstResiduals;
+        std::vector<double> secondResiduals;
+        for (const ShapeCorrection& shape : detector4Shapes) {
+            if (!shape.valid) continue;
+            firstResiduals.push_back(shape.firstAnchorResidual);
+            secondResiduals.push_back(shape.secondAnchorResidual);
+        }
+        std::cout << "Detector 4: made " << validDetector4Shapes
+                  << " time-dependent shape corrections (median 536/628-keV "
+                     "pre-shape residuals " << median(firstResiduals) << " and "
+                  << median(secondResiduals) << " keV).\n";
     } else {
         std::cerr << "Warning: detector 4 nonlinear correction could not be "
                      "determined; writing its ordinary affine correction.\n";
     }
+    const std::size_t nonlinearDetector16Groups = static_cast<std::size_t>(
+        std::count_if(detector16Piecewise.begin(), detector16Piecewise.end(),
+            [](const PiecewiseLinearCorrection& correction) {
+                return correction.valid;
+            }));
+    std::cout << "Detector 16: selected a guarded piecewise-linear correction in "
+              << nonlinearDetector16Groups << " / " << groupCount
+              << " groups.\n";
 
 
     unsigned int residualGroupIndex = 0;
@@ -888,6 +1326,8 @@ int DriftCalibrationFitter::run(const std::string& inputFileName,
     double residualFinalEnergy = 0.0;
     double residualFinalValue = 0.0;
     bool residualShapeApplied = false;
+    bool residualQuadraticApplied = false;
+    bool residualPiecewiseApplied = false;
     TTree residualTree(
         "DriftCorrectedPeakResiduals",
         "Accepted peak residuals after affine and final drift corrections");
@@ -900,6 +1340,8 @@ int DriftCalibrationFitter::run(const std::string& inputFileName,
     residualTree.Branch("finalEnergyKeV", &residualFinalEnergy);
     residualTree.Branch("finalResidualKeV", &residualFinalValue);
     residualTree.Branch("shapeApplied", &residualShapeApplied);
+    residualTree.Branch("quadraticApplied", &residualQuadraticApplied);
+    residualTree.Branch("piecewiseApplied", &residualPiecewiseApplied);
     for (const AcceptedPeakRecord& record : acceptedPeakRecords) {
         const GroupCorrection& correction =
             corrections[record.detectorID][record.groupIndex];
@@ -911,13 +1353,34 @@ int DriftCalibrationFitter::run(const std::string& inputFileName,
         residualAffineEnergy = correction.offset+
             correction.slope*record.measuredEnergy;
         residualAffineValue = residualAffineEnergy-record.referenceEnergy;
+        const ShapeCorrection& detector4Shape =
+            detector4Shapes[record.groupIndex];
         residualShapeApplied = detector4Shape.valid &&
             record.detectorID == kNonlinearDriftDetectorID &&
             residualAffineEnergy > kShapeLowerEnergyKeV &&
             residualAffineEnergy < kShapeUpperEnergyKeV;
-        residualFinalEnergy = residualShapeApplied
-            ? applyShapeCorrection(detector4Shape, residualAffineEnergy)
-            : residualAffineEnergy;
+        residualPiecewiseApplied = record.detectorID ==
+                kQuadraticDriftDetectorID &&
+            detector16Piecewise[record.groupIndex].valid;
+        residualQuadraticApplied = !residualPiecewiseApplied &&
+            record.detectorID ==
+                kQuadraticDriftDetectorID &&
+            detector16Corrections[record.groupIndex].valid &&
+            detector16Corrections[record.groupIndex].nonlinear;
+        if (residualShapeApplied) {
+            residualFinalEnergy = applyShapeCorrection(
+                detector4Shape, residualAffineEnergy);
+        } else if (residualPiecewiseApplied) {
+            residualFinalEnergy = applyPiecewiseLinear(
+                detector16Piecewise[record.groupIndex],
+                record.measuredEnergy);
+        } else if (residualQuadraticApplied) {
+            residualFinalEnergy = evaluatePolynomial(
+                detector16Corrections[record.groupIndex].coefficients,
+                record.measuredEnergy);
+        } else {
+            residualFinalEnergy = residualAffineEnergy;
+        }
         residualFinalValue = residualFinalEnergy-record.referenceEnergy;
         residualTree.Fill();
     }
@@ -949,6 +1412,11 @@ int DriftCalibrationFitter::run(const std::string& inputFileName,
         offsetGraphs;
     std::array<std::unique_ptr<TGraphErrors>, config::kGermaniumIdBins>
         slopeGraphs;
+    std::vector<std::size_t> chronologicalPosition(groupCount);
+    for (std::size_t position = 0; position < chronologicalGroups.size();
+         ++position) {
+        chronologicalPosition[chronologicalGroups[position]] = position;
+    }
     for (unsigned int detector = 0;
          detector < config::kGermaniumIdBins; ++detector) {
         offsetGraphs[detector] = std::make_unique<TGraphErrors>();
@@ -979,16 +1447,75 @@ int DriftCalibrationFitter::run(const std::string& inputFileName,
             correctionTree.Fill();
             if (correction.valid) {
                 offsetGraphs[detector]->SetPoint(
-                    graphPoint, group, correction.offset);
+                    graphPoint, chronologicalPosition[group], correction.offset);
                 offsetGraphs[detector]->SetPointError(
                     graphPoint, 0.0, correction.offsetError);
                 slopeGraphs[detector]->SetPoint(
-                    graphPoint, group, correction.slope);
+                    graphPoint, chronologicalPosition[group], correction.slope);
                 slopeGraphs[detector]->SetPointError(
                     graphPoint, 0.0, correction.slopeError);
                 ++graphPoint;
             }
         }
+    }
+
+    unsigned int nonlinearGroupIndex = 0;
+    double detector4FirstResidual = 0.0;
+    double detector4SecondResidual = 0.0;
+    bool detector4ShapeValid = false;
+    TTree detector4ShapeTree(
+        "Detector4ShapeCorrections",
+        "Smoothed time-dependent detector-4 nonlinear corrections");
+    detector4ShapeTree.Branch("groupIndex", &nonlinearGroupIndex);
+    detector4ShapeTree.Branch("valid", &detector4ShapeValid);
+    detector4ShapeTree.Branch("residual535KeV", &detector4FirstResidual);
+    detector4ShapeTree.Branch("residual628KeV", &detector4SecondResidual);
+
+    int detector16Source = 0;
+    bool detector16Valid = false;
+    bool detector16Nonlinear = false;
+    bool detector16PiecewiseApplied = false;
+    unsigned int detector16AnchorCount = 0;
+    double detector16C0 = 0.0;
+    double detector16C1 = 1.0;
+    double detector16C2 = 0.0;
+    double detector16Rms = 0.0;
+    unsigned int detector16PeakCount = 0;
+    TTree detector16Tree(
+        "Detector16PolynomialCorrections",
+        "Guarded detector-16 correction selection");
+    detector16Tree.Branch("groupIndex", &nonlinearGroupIndex);
+    detector16Tree.Branch("source", &detector16Source);
+    detector16Tree.Branch("valid", &detector16Valid);
+    detector16Tree.Branch("nonlinear", &detector16Nonlinear);
+    detector16Tree.Branch("piecewise", &detector16PiecewiseApplied);
+    detector16Tree.Branch("piecewiseAnchorCount", &detector16AnchorCount);
+    detector16Tree.Branch("c0", &detector16C0);
+    detector16Tree.Branch("c1", &detector16C1);
+    detector16Tree.Branch("c2", &detector16C2);
+    detector16Tree.Branch("rmsKeV", &detector16Rms);
+    detector16Tree.Branch("peakCount", &detector16PeakCount);
+    for (std::size_t group = 0; group < groupCount; ++group) {
+        nonlinearGroupIndex = static_cast<unsigned int>(group);
+        const ShapeCorrection& shape = detector4Shapes[group];
+        detector4ShapeValid = shape.valid;
+        detector4FirstResidual = shape.firstAnchorResidual;
+        detector4SecondResidual = shape.secondAnchorResidual;
+        detector4ShapeTree.Fill();
+
+        const PolynomialCorrection& polynomial = detector16Corrections[group];
+        detector16Source = static_cast<int>(polynomial.source);
+        detector16Valid = polynomial.valid;
+        detector16Nonlinear = polynomial.nonlinear;
+        detector16PiecewiseApplied = detector16Piecewise[group].valid;
+        detector16AnchorCount = static_cast<unsigned int>(
+            detector16Piecewise[group].anchors.size());
+        detector16C0 = polynomial.coefficients[0];
+        detector16C1 = polynomial.coefficients[1];
+        detector16C2 = polynomial.coefficients[2];
+        detector16Rms = polynomial.rms;
+        detector16PeakCount = polynomial.peakCount;
+        detector16Tree.Fill();
     }
 
     std::map<std::string, std::vector<FileRecord>> filesBySeries;
@@ -1010,15 +1537,33 @@ int DriftCalibrationFitter::run(const std::string& inputFileName,
                                      fileName + "'");
         }
         output << "# Fine drift correction for series " << seriesEntry.first
-               << "\n# Applied after the main calibration: "
-                  "E_corrected = C0 + C1*E_main\n"
-               << "# RUN ID NCOEFF C0 C1\n";
+               << "\n# Applied after the main calibration. Detector 16 may "
+                  "use a guarded quadratic; other entries are affine.\n"
+               << "# RUN ID NCOEFF COEFFICIENTS...\n";
         output << std::setprecision(12);
         for (const FileRecord& file : seriesEntry.second) {
             for (unsigned int detector = 0;
                  detector < config::kGermaniumIdBins; ++detector) {
-                if (detector4Shape.valid &&
+                if (detector4Shapes[file.groupIndex].valid &&
                     detector == kNonlinearDriftDetectorID) {
+                    continue;
+                }
+                if (detector == kQuadraticDriftDetectorID &&
+                    detector16Piecewise[file.groupIndex].valid) {
+                    continue;
+                }
+                if (detector == kQuadraticDriftDetectorID &&
+                    detector16Corrections[file.groupIndex].valid) {
+                    const PolynomialCorrection& polynomial =
+                        detector16Corrections[file.groupIndex];
+                    output << file.run << ' ' << detector << ' '
+                           << (polynomial.nonlinear ? 3 : 2) << ' '
+                           << polynomial.coefficients[0] << ' '
+                           << polynomial.coefficients[1];
+                    if (polynomial.nonlinear) {
+                        output << ' ' << polynomial.coefficients[2];
+                    }
+                    output << '\n';
                     continue;
                 }
                 const GroupCorrection& correction =
@@ -1031,7 +1576,8 @@ int DriftCalibrationFitter::run(const std::string& inputFileName,
         writtenFiles.push_back(fileName);
         std::cout << "Wrote " << fileName << ".\n";
 
-        if (detector4Shape.valid) {
+        if (validDetector4Shapes != 0U ||
+            nonlinearDetector16Groups != 0U) {
             const std::string nonlinearFileName =
                 nonlinearCorrectionFileName(outputPrefix, seriesEntry.first);
             std::ofstream nonlinearOutput(nonlinearFileName);
@@ -1041,7 +1587,8 @@ int DriftCalibrationFitter::run(const std::string& inputFileName,
                     nonlinearFileName + "'");
             }
             nonlinearOutput
-                << "# Detector 4 fine drift and static shape correction for "
+                << "# Nonlinear fine drift corrections (detector 4 and, when "
+                   "needed, detector 16) for "
                 << "series " << seriesEntry.first << '\n'
                 << "# Apply after the main calibration and the matching "
                    "run-by-run .cal file.\n"
@@ -1049,32 +1596,57 @@ int DriftCalibrationFitter::run(const std::string& inputFileName,
                    "[NCOEFF COEFFICIENTS... INPUT_END_KEV]...\n";
             nonlinearOutput << std::setprecision(16);
             for (const FileRecord& file : seriesEntry.second) {
-                const GroupCorrection& correction =
-                    corrections[kNonlinearDriftDetectorID][file.groupIndex];
-                if (!correction.valid) continue;
-                const double lowerInputBoundary =
-                    (kShapeLowerEnergyKeV-correction.offset)/correction.slope;
-                const double upperInputBoundary =
-                    (kShapeUpperEnergyKeV-correction.offset)/correction.slope;
-                if (!(lowerInputBoundary > 0.0 &&
-                      upperInputBoundary > lowerInputBoundary &&
-                      upperInputBoundary < config::kDriftEnergyMax)) {
-                    throw std::runtime_error(
-                        "detector 4 nonlinear correction has invalid piece "
-                        "boundaries for run " + std::to_string(file.run));
+                const ShapeCorrection& detector4Shape =
+                    detector4Shapes[file.groupIndex];
+                if (detector4Shape.valid) {
+                    const GroupCorrection& correction =
+                        corrections[kNonlinearDriftDetectorID][file.groupIndex];
+                    if (correction.valid) {
+                        const double lowerInputBoundary =
+                            (kShapeLowerEnergyKeV-correction.offset)/correction.slope;
+                        const double upperInputBoundary =
+                            (kShapeUpperEnergyKeV-correction.offset)/correction.slope;
+                        if (!(lowerInputBoundary > 0.0 &&
+                              upperInputBoundary > lowerInputBoundary &&
+                              upperInputBoundary < config::kDriftEnergyMax)) {
+                            throw std::runtime_error(
+                                "detector 4 nonlinear correction has invalid piece "
+                                "boundaries for run " + std::to_string(file.run));
+                        }
+                        const std::array<double, 6> middle =
+                            composeShapePolynomial(detector4Shape, correction);
+                        nonlinearOutput << file.run << ' '
+                            << kNonlinearDriftDetectorID << " 3 2 "
+                            << correction.offset << ' ' << correction.slope << ' '
+                            << lowerInputBoundary << " 6";
+                        for (const double coefficient : middle) {
+                            nonlinearOutput << ' ' << coefficient;
+                        }
+                        nonlinearOutput << ' ' << upperInputBoundary << " 2 "
+                            << correction.offset << ' ' << correction.slope << ' '
+                            << config::kDriftEnergyMax << '\n';
+                    }
                 }
-                const std::array<double, 6> middle =
-                    composeShapePolynomial(detector4Shape, correction);
+
+                const PiecewiseLinearCorrection& piecewise =
+                    detector16Piecewise[file.groupIndex];
+                if (!piecewise.valid) continue;
                 nonlinearOutput << file.run << ' '
-                    << kNonlinearDriftDetectorID << " 3 2 "
-                    << correction.offset << ' ' << correction.slope << ' '
-                    << lowerInputBoundary << " 6";
-                for (const double coefficient : middle) {
-                    nonlinearOutput << ' ' << coefficient;
+                    << kQuadraticDriftDetectorID << ' '
+                    << piecewise.anchors.size()-1U;
+                for (std::size_t index = 0;
+                     index+1U < piecewise.anchors.size(); ++index) {
+                    const auto& first = piecewise.anchors[index];
+                    const auto& second = piecewise.anchors[index+1U];
+                    const double slope = (second.second-first.second)/
+                                         (second.first-first.first);
+                    const double offset = first.second-slope*first.first;
+                    const double end = index+2U < piecewise.anchors.size()
+                        ? second.first : config::kDriftEnergyMax;
+                    nonlinearOutput << " 2 " << offset << ' ' << slope
+                                    << ' ' << end;
                 }
-                nonlinearOutput << ' ' << upperInputBoundary << " 2 "
-                    << correction.offset << ' ' << correction.slope << ' '
-                    << config::kDriftEnergyMax << '\n';
+                nonlinearOutput << '\n';
             }
             writtenFiles.push_back(nonlinearFileName);
             std::cout << "Wrote " << nonlinearFileName << ".\n";
@@ -1086,6 +1658,8 @@ int DriftCalibrationFitter::run(const std::string& inputFileName,
     alignmentTree.Write();
     correctionTree.Write();
     residualTree.Write();
+    detector4ShapeTree.Write();
+    detector16Tree.Write();
     TDirectory* graphDirectory = diagnostics.mkdir("CorrectionGraphs");
     graphDirectory->cd();
     for (unsigned int detector = 0;
@@ -1101,25 +1675,39 @@ int DriftCalibrationFitter::run(const std::string& inputFileName,
         "0=measured, 1=interpolated between measured groups, "
         "2=nearest measured group, 3=missing");
     sourceKey.Write();
-    if (detector4Shape.valid) {
+    if (validDetector4Shapes != 0U) {
+        std::vector<double> firstResiduals;
+        std::vector<double> secondResiduals;
+        for (const ShapeCorrection& shape : detector4Shapes) {
+            if (!shape.valid) continue;
+            firstResiduals.push_back(shape.firstAnchorResidual);
+            secondResiduals.push_back(shape.secondAnchorResidual);
+        }
         std::ostringstream description;
         description << std::setprecision(12)
             << "Detector 4 uses stable affine anchors outside 450--750 keV. "
-               "A static smooth correction is zero in value and slope at "
+               "A measured/local-median blend over seven groups is zero "
+               "in value and slope at "
             << kShapeLowerEnergyKeV << " and " << kShapeUpperEnergyKeV
-            << " keV; median affine residuals at " << kFirstShapeAnchorKeV
-            << " and " << kSecondShapeAnchorKeV << " keV were "
-            << detector4Shape.firstAnchorResidual << " and "
-            << detector4Shape.secondAnchorResidual
-            << " keV. Normalized delta coefficients c0..c5: ";
-        for (const double coefficient :
-             detector4Shape.normalizedCoefficients) {
-            description << coefficient << ' ';
-        }
+            << " keV. Experiment-wide median affine residuals at "
+            << kFirstShapeAnchorKeV << " and " << kSecondShapeAnchorKeV
+            << " keV were " << median(firstResiduals) << " and "
+            << median(secondResiduals) << " keV. Group coefficients are "
+               "stored in Detector4ShapeCorrections.";
         TNamed detector4Metadata(
             "Detector4NonlinearDriftCorrection", description.str().c_str());
         detector4Metadata.Write();
     }
+    std::ostringstream orderDescription;
+    for (std::size_t index = 0; index < seriesOrder_.size(); ++index) {
+        if (index != 0U) orderDescription << ',';
+        orderDescription << seriesOrder_[index];
+    }
+    TNamed orderMetadata(
+        "DriftChronologicalSeriesOrder",
+        (seriesOrder_.empty() ? "input provenance order"
+                              : orderDescription.str()).c_str());
+    orderMetadata.Write();
     diagnostics.Close();
     std::cout << "Wrote diagnostics to " << diagnosticFileName << ".\n";
     return 0;
