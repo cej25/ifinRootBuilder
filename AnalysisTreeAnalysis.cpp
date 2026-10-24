@@ -41,6 +41,11 @@ const config::DetectorDefinition& definitionFor(unsigned short type)
     return *found;
 }
 
+bool insideInclusive(double value, double minimum, double maximum)
+{
+    return value >= minimum && value <= maximum;
+}
+
 } // namespace
 
 AnalysisTreeAnalysis::AnalysisTreeAnalysis()
@@ -259,6 +264,16 @@ void AnalysisTreeAnalysis::processReader(
         std::vector<double> allGammaEnergies;
         std::vector<double> vetoedGammaEnergies;
         std::vector<unsigned short> vetoedGammaIDs;
+        std::vector<double> acceptedSiliconEnergies;
+        acceptedSiliconEnergies.reserve(siEnergy->size());
+        for (std::size_t hit = 0; hit < siEnergy->size(); ++hit) {
+            if (insideInclusive(siTime->at(hit), config::kSiliconTimeMinNs,
+                                config::kSiliconTimeMaxNs) &&
+                insideInclusive(siEnergy->at(hit), config::kSiliconEnergyMin,
+                                config::kSiliconEnergyMax)) {
+                acceptedSiliconEnergies.push_back(siEnergy->at(hit));
+            }
+        }
         allGammaEnergies.reserve(geEnergy->size());
         for (std::size_t hit = 0; hit < geID->size(); ++hit) {
             const double energy = geEnergy->at(hit);
@@ -287,6 +302,9 @@ void AnalysisTreeAnalysis::processReader(
         if (*siliconCoincident) {
             germaniumConditionHistograms_.fillBgoVetoedSiliconCoincidences(
                 vetoedGammaEnergies);
+            germaniumConditionHistograms_.fillBgoVetoedSiliconEvent(
+                vetoedGammaEnergies, vetoedGammaIDs, *geMultiplicity,
+                acceptedSiliconEnergies);
             angularCoincidences_.fillEvent(
                 vetoedGammaEnergies, vetoedGammaIDs);
         }
@@ -390,6 +408,7 @@ int AnalysisTreeAnalysis::writeOutput(const std::string& outputFileName)
     gammaCoincidences_.write(outputFile);
     TDirectory* coincidences = outputFile.GetDirectory("Coincidences");
     if (!coincidences) return 4;
+    germaniumConditionHistograms_.writeParticleGamma(*coincidences);
     angularCoincidences_.write(*coincidences);
     outputFile.Close();
     return 0;

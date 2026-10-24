@@ -66,6 +66,13 @@ inline constexpr int    kGammaBins = 2048;
 inline constexpr double kGammaMin  = 0.0;
 inline constexpr double kGammaMax  = 2048.0;
 
+// Particle-gamma matrix. Germanium retains the 1-keV coincidence binning.
+// The silicon ADC axis uses 5-channel bins over the region containing the
+// current 1000--4000 silicon condition, keeping per-thread memory modest.
+inline constexpr int    kSiliconGermaniumSiliconBins = 1000;
+inline constexpr double kSiliconGermaniumSiliconMin  = 0.0;
+inline constexpr double kSiliconGermaniumSiliconMax  = 5000.0;
+
 // absoluteTime is interpreted as seconds. The running-time x-axis is set at
 // runtime to the sum of the per-file durations while keeping a fixed number
 // of bins, so large multi-run datasets do not create enormous histograms.

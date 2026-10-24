@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <string>
 #include <stdexcept>
 
 namespace {
@@ -69,6 +70,9 @@ GermaniumConditionHistograms::GermaniumConditionHistograms()
       siliconBgoVetoed_(makeSpectrum(
           "h1_Ge_Si_E",
           "Germanium energy after BGO veto with silicon condition;Energy [raw units];Counts")),
+      siliconBgoVetoedMultiplicityOne_(makeSpectrum(
+          "h1_Ge_Si_M1_E",
+          "Germanium energy for Ge multiplicity one after BGO veto with silicon condition;Energy [raw units];Counts")),
       multiplicityAfterBgoVeto_(makeMultiplicity(
           "h1_Ge_Multiplicity",
           "Germanium multiplicity after BGO veto;Germanium hits per event;Events")),
@@ -82,6 +86,32 @@ GermaniumConditionHistograms::GermaniumConditionHistograms()
           "h1_Ge_Si_E",
           "Germanium energy for all FoldValid states after BGO veto and silicon condition;Energy [raw units];Counts"))
 {
+    for (std::size_t index = 0;
+         index < config::kGermaniumAngleGroups.size(); ++index) {
+        const auto& group = config::kGermaniumAngleGroups[index];
+        const std::string name =
+            "h1_Ge_Si_E_ID" +
+            (group.firstID < 10 ? std::string("0") : std::string()) +
+            std::to_string(group.firstID) + "-" +
+            (group.lastID < 10 ? std::string("0") : std::string()) +
+            std::to_string(group.lastID);
+        const std::string title =
+            std::string(group.title) +
+            " germanium energy after BGO veto with silicon condition;Energy [raw units];Counts";
+        siliconBgoVetoedByRing_[index] =
+            makeSpectrum(name.c_str(), title.c_str());
+    }
+
+    siliconEnergyVsGermaniumEnergy_ = std::make_unique<TH2I>(
+        "h2_Ge_Si_EvE",
+        "Accepted silicon energy versus BGO-vetoed germanium energy;Germanium energy [raw units];Silicon energy [raw units]",
+        config::kGammaBins, config::kGammaMin, config::kGammaMax,
+        config::kSiliconGermaniumSiliconBins,
+        config::kSiliconGermaniumSiliconMin,
+        config::kSiliconGermaniumSiliconMax);
+    siliconEnergyVsGermaniumEnergy_->SetDirectory(nullptr);
+    siliconEnergyVsGermaniumEnergy_->SetOption("COLZ");
+
     unconditionedGammaGammaProjection_ = makeGammaProjection(
         "h1_Ge_noVeto_gg_proj",
         "Projection of symmetrised Ge-Ge matrix without BGO or silicon conditions;Energy [raw units];Counts");
@@ -120,10 +150,16 @@ void GermaniumConditionHistograms::setCalibratedEnergyAxes()
     TH1D* spectra[] = {unconditionedGammaGammaProjection_.get(),
                        bgoVetoedSiliconGammaGammaProjection_.get(),
                        bgoVetoed_.get(), siliconBgoVetoed_.get(),
+                       siliconBgoVetoedMultiplicityOne_.get(),
                        foldValidEnergy_.get(), foldInclusiveEnergy_.get()};
     for (TH1D* spectrum : spectra) {
         spectrum->GetXaxis()->SetTitle("Energy [keV]");
     }
+    for (auto& spectrum : siliconBgoVetoedByRing_) {
+        spectrum->GetXaxis()->SetTitle("Energy [keV]");
+    }
+    siliconEnergyVsGermaniumEnergy_->GetXaxis()->SetTitle(
+        "Germanium energy [keV]");
     energyVsTime_->GetYaxis()->SetTitle("Energy [keV]");
 }
 
@@ -160,6 +196,40 @@ void GermaniumConditionHistograms::fillBgoVetoedSiliconCoincidences(
         *bgoVetoedSiliconGammaGammaProjection_, germaniumEnergies);
 }
 
+void GermaniumConditionHistograms::fillBgoVetoedSiliconEvent(
+    const std::vector<double>& germaniumEnergies,
+    const std::vector<unsigned short>& germaniumIDs,
+    unsigned int germaniumMultiplicityBeforeBgoVeto,
+    const std::vector<double>& acceptedSiliconEnergies)
+{
+    if (germaniumEnergies.size() != germaniumIDs.size()) {
+        throw std::logic_error(
+            "BGO-vetoed germanium energies and IDs have different sizes");
+    }
+    if (acceptedSiliconEnergies.empty()) return;
+
+    for (std::size_t hit = 0; hit < germaniumEnergies.size(); ++hit) {
+        const double germaniumEnergy = germaniumEnergies[hit];
+        const unsigned short germaniumID = germaniumIDs[hit];
+        for (std::size_t ring = 0;
+             ring < config::kGermaniumAngleGroups.size(); ++ring) {
+            const auto& group = config::kGermaniumAngleGroups[ring];
+            if (germaniumID >= group.firstID &&
+                germaniumID <= group.lastID) {
+                siliconBgoVetoedByRing_[ring]->Fill(germaniumEnergy);
+                break;
+            }
+        }
+        if (germaniumMultiplicityBeforeBgoVeto == 1U) {
+            siliconBgoVetoedMultiplicityOne_->Fill(germaniumEnergy);
+        }
+        for (const double siliconEnergy : acceptedSiliconEnergies) {
+            siliconEnergyVsGermaniumEnergy_->Fill(
+                germaniumEnergy, siliconEnergy);
+        }
+    }
+}
+
 void GermaniumConditionHistograms::fillEvent(
     unsigned int germaniumMultiplicityAfterBgoVeto,
     bool siliconCoincident, bool foldValid)
@@ -179,6 +249,15 @@ void GermaniumConditionHistograms::merge(
         other.bgoVetoedSiliconGammaGammaProjection_.get());
     bgoVetoed_->Add(other.bgoVetoed_.get());
     siliconBgoVetoed_->Add(other.siliconBgoVetoed_.get());
+    siliconBgoVetoedMultiplicityOne_->Add(
+        other.siliconBgoVetoedMultiplicityOne_.get());
+    for (std::size_t ring = 0;
+         ring < siliconBgoVetoedByRing_.size(); ++ring) {
+        siliconBgoVetoedByRing_[ring]->Add(
+            other.siliconBgoVetoedByRing_[ring].get());
+    }
+    siliconEnergyVsGermaniumEnergy_->Add(
+        other.siliconEnergyVsGermaniumEnergy_.get());
     multiplicityAfterBgoVeto_->Add(other.multiplicityAfterBgoVeto_.get());
     foldValidMultiplicity_->Add(other.foldValidMultiplicity_.get());
     foldValidEnergy_->Add(other.foldValidEnergy_.get());
@@ -198,6 +277,18 @@ void GermaniumConditionHistograms::write(
     bgoVetoedSiliconGammaGammaProjection_->Write();
     bgoVetoed_->Write();
     siliconBgoVetoed_->Write();
+    siliconBgoVetoedMultiplicityOne_->Write();
+
+    TDirectory* ringDirectory = energyDirectory.mkdir("Rings");
+    if (ringDirectory == nullptr) {
+        throw std::runtime_error(
+            "Could not create Germanium/Energy/Rings directory");
+    }
+    ringDirectory->cd();
+    for (const auto& spectrum : siliconBgoVetoedByRing_) {
+        spectrum->Write();
+    }
+    energyDirectory.cd();
 
     auto normalizedBaseline = std::make_unique<TH1D>(*bgoVetoed_);
     normalizedBaseline->SetName(
@@ -251,5 +342,20 @@ void GermaniumConditionHistograms::write(
 
     timeDirectory.cd();
     energyVsTime_->Write();
+
     germaniumDirectory.cd();
+}
+
+void GermaniumConditionHistograms::writeParticleGamma(
+    TDirectory& coincidenceDirectory) const
+{
+    TDirectory* particleGammaDirectory =
+        coincidenceDirectory.mkdir("ParticleGamma");
+    if (particleGammaDirectory == nullptr) {
+        throw std::runtime_error(
+            "Could not create Coincidences/ParticleGamma directory");
+    }
+    particleGammaDirectory->cd();
+    siliconEnergyVsGermaniumEnergy_->Write();
+    coincidenceDirectory.cd();
 }

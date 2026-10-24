@@ -490,6 +490,27 @@ Individual germanium energy spectra are written under
 `Calibrated` contains the corresponding calibrated spectra from 0 to 2048 keV.
 Both use the same accepted, in-time Ge hits.
 
+Additional silicon-conditioned products are written during histogramming:
+
+```text
+Germanium/Energy/h1_Ge_Si_M1_E
+Germanium/Energy/Rings/h1_Ge_Si_E_ID00-04
+Germanium/Energy/Rings/h1_Ge_Si_E_ID05-09
+Germanium/Energy/Rings/h1_Ge_Si_E_ID10-14
+Germanium/Energy/Rings/h1_Ge_Si_E_ID15-19
+Germanium/Energy/Rings/h1_Ge_Si_E_ID20-24
+Coincidences/ParticleGamma/h2_Ge_Si_EvE
+```
+
+These products use germanium hits that pass the Ge timing gate and BGO veto.
+The silicon hits pass both the configured silicon timing and energy gates. In
+the two-dimensional particle-gamma matrix, every accepted silicon hit is
+paired with every accepted germanium hit in the event: two silicon hits and
+four germanium hits therefore contribute eight entries. The multiplicity-one
+spectrum requires the pre-veto valid Ge multiplicity to be exactly one; its
+single Ge hit must then survive the BGO veto. The five ring spectra correspond
+to detector IDs 0--4, 5--9, 10--14, 15--19 and 20--24 respectively.
+
 Before event processing, the program reads the first and last `absoluteTime`
 from each input file. It concatenates the elapsed time within each file to form
 a continuous total-running-time coordinate. The all-detector drift matrix is
@@ -590,13 +611,16 @@ The supplied `coincidence_gates.txt` has four sections:
 
 ```text
 [Symmetric]
-Gate296 292 300 283 290 310 318
+Gate296 294 299 288 293 306 311
+Gate159 157 162 151 156 163 168
 
 [AllvFW]
-# Add forward gates here
+Gate296 294 299 288 293 306 311
+Gate159 157 162 151 156 163 168
 
 [AllvBW]
-# Add backward gates here
+Gate296 294 299 288 293 306 311
+Gate159 157 162 151 156 163 168
 
 [Double]
 # Add triple-coincidence/double-gate definitions here
@@ -608,12 +632,19 @@ Each gate line is:
 NAME PROMPT_MIN PROMPT_MAX LOWER_MIN LOWER_MAX UPPER_MIN UPPER_MAX
 ```
 
-All windows are half-open: `MIN <= energy < MAX`. Thus `292 300`
-contains the 1-keV channels 292 through 299. The program subtracts both
+All windows are half-open: `MIN <= energy < MAX`. Thus `294 299`
+contains the 1-keV channels 294 through 298. The supplied starter gates are
+296 keV (prompt 294--298, sidebands 288--292 and 306--310) and 159 keV
+(prompt 157--161, sidebands 151--155 and 163--167). The program subtracts both
 sidebands and automatically scales them by
 `prompt width / combined sideband width`. Any number of uniquely named gates
 can be included in each section. Lines beginning with `#` and blank lines are
 ignored.
+
+The supplied 296- and 159-keV gates are present in `[Symmetric]`, `[AllvFW]`
+and `[AllvBW]`. The symmetric entries project the other gamma from the regular
+Ge-Ge matrix. The angular entries gate the ALL axis and project the forward or
+backward detector axis respectively.
 
 All configurable gated spectra are calibrated when calibration is supplied,
 BGO-vetoed, and silicon-conditioned. `[Symmetric]` gates the regular

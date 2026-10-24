@@ -313,6 +313,7 @@ void RawAnalysis::processReader(TTreeReader& reader,
         std::vector<bool> acceptedGermanium(hitCount, false);
         std::unordered_set<UShort_t> inTimeBgoIDs;
         bool siliconCoincident = false;
+        std::vector<double> acceptedSiliconEnergies;
 
         for (std::size_t hit = 0; hit < hitCount; ++hit) {
             const double relativeTimePs =
@@ -346,6 +347,9 @@ void RawAnalysis::processReader(TTreeReader& reader,
                 gateStatistics_.recordSilicon(passesTiming, passesEnergy);
                 siliconCoincident = siliconCoincident ||
                     (passesTiming && passesEnergy);
+                if (passesTiming && passesEnergy) {
+                    acceptedSiliconEnergies.push_back(energy->at(hit));
+                }
             }
         }
         gateStatistics_.recordEvent(siliconCoincident);
@@ -484,6 +488,9 @@ void RawAnalysis::processReader(TTreeReader& reader,
         if (siliconCoincident) {
             germaniumConditionHistograms_.fillBgoVetoedSiliconCoincidences(
                 bgoVetoedGammaEnergies);
+            germaniumConditionHistograms_.fillBgoVetoedSiliconEvent(
+                bgoVetoedGammaEnergies, bgoVetoedGammaIDs,
+                germaniumMultiplicity, acceptedSiliconEnergies);
             angularCoincidences_.fillEvent(
                 bgoVetoedGammaEnergies, bgoVetoedGammaIDs);
         }
@@ -728,6 +735,8 @@ int RawAnalysis::run(const std::vector<std::string>& inputPatterns,
         std::cerr << "Error: gamma-coincidence directory was not created.\n";
         return 4;
     }
+    germaniumConditionHistograms_.writeParticleGamma(
+        *gammaCoincidenceDirectory);
     angularCoincidences_.write(*gammaCoincidenceDirectory);
     outputFile.Close();
 
