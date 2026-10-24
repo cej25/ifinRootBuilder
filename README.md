@@ -30,6 +30,7 @@ build/fit_calibration_peaks
 build/fit_energy_calibration
 build/build_drift_spectra
 build/fit_drift_calibration
+build/plot_calibration_diagnostics
 ```
 
 To perform a completely clean rebuild:
@@ -238,16 +239,19 @@ between source anchors. Its time-dependent offset and gain are fitted only
 with the stable 301-, 1015-, 1461-, and 1779-keV in-beam anchors (at least
 three spanning at least 700 keV). Residuals at the 301-, 536-, 628-, 1015-,
 1461- and 1779-keV references then define a full-range piecewise-linear
-correction for each group. Each measured residual is blended with a robust
-seven-group local trajectory. The 536- and 628-keV shape anchors permit a
-guarded lower-significance fit when its centroid, width and uncertainty remain
-well constrained; these points never enter the affine gain fit. Missing shape
-anchors are interpolated chronologically between the nearest reliable
-measurements instead of using an experiment-wide average, while isolated
-false fits use the robust local trajectory. Segment slopes are checked for
-monotonicity and reasonable scale. This follows detector 4's changing response
-over the full analysis range without allowing false centroids such as the
-group-33 1015-keV fit to enter the calibration.
+correction for each group. To obtain enough statistics without broadening a
+peak through unresolved gain drift, the 536- and 628-keV spectra from up to
+five neighbouring groups in the same target-distance series are first aligned
+with their individual affine corrections and then summed. The fitted shape
+anchors are assigned to the centre group and blended with a robust seven-group
+local trajectory; they never enter the affine gain fit. Missing shape anchors
+are interpolated chronologically between the nearest reliable measurements,
+while isolated false fits use the robust local trajectory. Segment slopes are
+checked for monotonicity and reasonable scale. This follows detector 4's
+changing response over the full analysis range without allowing false
+centroids such as the group-33 1015-keV fit to enter the calibration. The
+individual window fits and their neighbour counts are stored in
+`Detector4WindowedPeakFits`.
 
 Detector 16 is also checked group by group for nonlinear drift. Mild curvature
 may use a guarded quadratic correction. For the sharp response change seen in
@@ -268,6 +272,35 @@ corrections. `detector4TrajectoryDifferenceKeV` and
 that were allowed to follow the detector-4 time trajectory.
 `Detector4PiecewiseCorrections` and
 `Detector16PolynomialCorrections` record the group-by-group choices.
+
+### Plot calibration diagnostics
+
+After the main and drift calibrations have been fitted, make readable
+per-detector calibration, resolution, and drift plots with:
+
+```bash
+build/plot_calibration_diagnostics \
+    mid_source_peak_fits.root \
+    midexp_calibration_diagnostics.root \
+    drift_calibration_diagnostics.root \
+    calibration_plots
+```
+
+This creates three multipage PDFs:
+
+- `calibration_plots/energy_calibrations.pdf`: raw ADC versus reference energy,
+  the selected calibration curve, used/rejected points, and residuals;
+- `calibration_plots/energy_resolution.pdf`: FWHM in keV versus reference
+  energy, calculated from each accepted source-peak width using the local
+  derivative of that detector's calibration, with a smooth resolution trend;
+- `calibration_plots/energy_drift.pdf`: applied offset and gain corrections
+  versus the true chronological drift-group position, with directly fitted
+  groups distinguished from interpolated groups.
+
+The same canvases are saved in
+`calibration_plots/calibration_diagnostic_plots.root` for interactive editing
+in ROOT. This plotting step reads only the three diagnostic files and does not
+reprocess any raw events.
 
 Because run numbers repeat at different target distances, the command writes
 one existing-format run-by-run file per series:

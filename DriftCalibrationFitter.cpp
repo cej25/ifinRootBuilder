@@ -125,6 +125,21 @@ struct AcceptedPeakRecord {
     double measuredEnergy = 0.0;
 };
 
+struct ShapePeakWindowDefinition {
+    double energyKeV = 0.0;
+    double searchHalfWidthKeV = 10.0;
+    double fitHalfWidthKeV = 4.0;
+};
+
+struct WindowedShapePeakRecord {
+    AcceptedPeakRecord peak;
+    double centroidErrorKeV = 0.0;
+    double sigmaKeV = 0.0;
+    double significance = 0.0;
+    unsigned int neighbourCount = 0;
+    bool accepted = false;
+};
+
 constexpr unsigned int kNonlinearDriftDetectorID = 4;
 constexpr unsigned int kQuadraticDriftDetectorID = 16;
 constexpr double kShapeLowerEnergyKeV = 301.570;
@@ -276,6 +291,151 @@ std::vector<double> robustTimeTrajectory(
                 ? 0.65*current+0.35*localCentre : localCentre;
     }
     return result;
+}
+
+std::vector<WindowedShapePeakRecord> fitWindowedDetector4ShapePeaks(
+    TFile& inputFile,
+    const std::array<std::vector<GroupCorrection>,
+                     config::kGermaniumIdBins>& corrections,
+    const std::vector<FileRecord>& files, std::size_t groupCount,
+    const std::vector<ShapePeakWindowDefinition>& definitions)
+{
+    std::vector<std::string> groupSeries(groupCount);
+    std::vector<unsigned int> groupFirstRun(
+        groupCount, std::numeric_limits<unsigned int>::max());
+    for (const FileRecord& file : files) {
+        groupSeries[file.groupIndex] = file.series;
+        groupFirstRun[file.groupIndex] = std::min(
+            groupFirstRun[file.groupIndex], file.run);
+    }
+    std::map<std::string, std::vector<std::size_t>> seriesGroups;
+    for (std::size_t group = 0; group < groupCount; ++group) {
+        seriesGroups[groupSeries[group]].push_back(group);
+    }
+    for (auto& entry : seriesGroups) {
+        std::stable_sort(entry.second.begin(), entry.second.end(),
+            [&groupFirstRun](std::size_t left, std::size_t right) {
+                return groupFirstRun[left] < groupFirstRun[right];
+            });
+    }
+
+    std::vector<WindowedShapePeakRecord> records;
+    for (const auto& seriesEntry : seriesGroups) {
+        const std::vector<std::size_t>& groups = seriesEntry.second;
+        for (std::size_t position = 0; position < groups.size(); ++position) {
+            const std::size_t targetGroup = groups[position];
+            const GroupCorrection& targetAffine =
+                corrections[kNonlinearDriftDetectorID][targetGroup];
+            if (!targetAffine.valid) continue;
+
+            TH1D aggregate(
+                "detector4WindowedShape", "", config::kDriftEnergyBins,
+                config::kDriftEnergyMin, config::kDriftEnergyMax);
+            aggregate.SetDirectory(nullptr);
+            const std::size_t begin = position > 2U ? position-2U : 0U;
+            const std::size_t end = std::min(groups.size(), position+3U);
+            unsigned int neighbourCount = 0;
+            for (std::size_t neighbour = begin; neighbour < end; ++neighbour) {
+                const std::size_t sourceGroup = groups[neighbour];
+                const GroupCorrection& affine =
+                    corrections[kNonlinearDriftDetectorID][sourceGroup];
+                if (!affine.valid) continue;
+                TH1D* source = dynamic_cast<TH1D*>(inputFile.Get(
+                    spectrumPath(static_cast<unsigned int>(sourceGroup),
+                                 kNonlinearDriftDetectorID).c_str()));
+                if (source == nullptr) continue;
+                ++neighbourCount;
+                for (int bin = 1; bin <= source->GetNbinsX(); ++bin) {
+                    const double content = source->GetBinContent(bin);
+                    if (content == 0.0) continue;
+                    const double correctedEnergy = affine.offset+
+                        affine.slope*source->GetBinCenter(bin);
+                    const int destination = aggregate.GetXaxis()->FindBin(
+                        correctedEnergy);
+                    if (destination < 1 ||
+                        destination > aggregate.GetNbinsX()) continue;
+                    aggregate.SetBinContent(
+                        destination,
+                        aggregate.GetBinContent(destination)+content);
+                }
+            }
+            if (neighbourCount == 0U) continue;
+
+            for (const ShapePeakWindowDefinition& definition : definitions) {
+                WindowedShapePeakRecord record;
+                record.peak.groupIndex = static_cast<unsigned int>(targetGroup);
+                record.peak.detectorID = kNonlinearDriftDetectorID;
+                record.peak.referenceEnergy = definition.energyKeV;
+                record.neighbourCount = neighbourCount;
+                const double searchMinimum = definition.energyKeV-
+                    definition.searchHalfWidthKeV;
+                const double searchMaximum = definition.energyKeV+
+                    definition.searchHalfWidthKeV;
+                const int firstBin = aggregate.GetXaxis()->FindBin(
+                    searchMinimum);
+                const int lastBin = aggregate.GetXaxis()->FindBin(
+                    searchMaximum);
+                int maximumBin = firstBin;
+                for (int bin = firstBin+1; bin <= lastBin; ++bin) {
+                    if (aggregate.GetBinContent(bin) >
+                        aggregate.GetBinContent(maximumBin)) maximumBin = bin;
+                }
+                if (maximumBin <= firstBin || maximumBin >= lastBin) {
+                    records.push_back(record);
+                    continue;
+                }
+                const double maximumEnergy = aggregate.GetBinCenter(maximumBin);
+                const double fitMinimum = std::max(
+                    searchMinimum,
+                    maximumEnergy-definition.fitHalfWidthKeV);
+                const double fitMaximum = std::min(
+                    searchMaximum,
+                    maximumEnergy+definition.fitHalfWidthKeV);
+                const int lowBin = aggregate.GetXaxis()->FindBin(fitMinimum);
+                const int highBin = aggregate.GetXaxis()->FindBin(fitMaximum);
+                const double background = 0.5*(
+                    aggregate.GetBinContent(lowBin)+
+                    aggregate.GetBinContent(highBin));
+                const double height = aggregate.GetBinContent(maximumBin);
+                TF1 function(
+                    "detector4WindowedPeak",
+                    "[0]*exp(-0.5*((x-[1])/[2])^2)+[3]+[4]*(x-[1])",
+                    fitMinimum, fitMaximum);
+                function.SetParameters(
+                    std::max(1.0, height-background), maximumEnergy, 1.2,
+                    std::max(0.0, background), 0.0);
+                function.SetParLimits(0, 0.0, std::max(1.0, height*10.0));
+                function.SetParLimits(1, fitMinimum, fitMaximum);
+                function.SetParLimits(2, 0.25, 5.0);
+                function.SetParLimits(3, 0.0, std::max(1.0, height*10.0));
+                const TFitResultPtr fit = aggregate.Fit(
+                    &function, "QRSN", "", fitMinimum, fitMaximum);
+                const int fitStatus = static_cast<int>(fit);
+                const double centroid = function.GetParameter(1);
+                record.centroidErrorKeV = function.GetParError(1);
+                record.sigmaKeV = function.GetParameter(2);
+                const double amplitude = function.GetParameter(0);
+                const double amplitudeError = function.GetParError(0);
+                record.significance = amplitudeError > 0.0
+                    ? amplitude/amplitudeError : 0.0;
+                record.accepted = fitStatus == 0 &&
+                    std::isfinite(centroid) &&
+                    std::isfinite(record.centroidErrorKeV) &&
+                    record.centroidErrorKeV > 0.0 &&
+                    record.centroidErrorKeV <= 0.4 &&
+                    std::abs(centroid-definition.energyKeV) <=
+                        definition.searchHalfWidthKeV &&
+                    record.sigmaKeV >= 0.4 && record.sigmaKeV <= 4.0 &&
+                    record.significance >= 4.0;
+                if (record.accepted) {
+                    record.peak.measuredEnergy =
+                        (centroid-targetAffine.offset)/targetAffine.slope;
+                }
+                records.push_back(record);
+            }
+        }
+    }
+    return records;
 }
 
 std::vector<PiecewiseLinearCorrection> determineDetector4Corrections(
@@ -1288,7 +1448,7 @@ int DriftCalibrationFitter::run(const std::string& inputFileName,
                 fitNdf = function.GetNDF();
                 const double amplitudeSignificance = fitAmplitudeError > 0.0
                     ? fitAmplitude/fitAmplitudeError : 0.0;
-                const bool strictlyAccepted = fitStatus == 0 &&
+                fitAccepted = fitStatus == 0 &&
                     std::isfinite(fitCentroid) &&
                     std::isfinite(fitCentroidError) &&
                     fitCentroidError > 0.0 && fitCentroidError <= 1.0 &&
@@ -1296,25 +1456,6 @@ int DriftCalibrationFitter::run(const std::string& inputFileName,
                         peak.searchHalfWidthKeV &&
                     fitSigma >= 0.2 && fitSigma <= 4.0 &&
                     amplitudeSignificance >= 5.0;
-                // Detector 4's 536- and 628-keV peaks can be broadened and
-                // displaced by its nonlinear response before the shape
-                // correction is applied.  Retain moderate-significance,
-                // well-constrained fits for the shape trajectory only.  The
-                // two energies are excluded from detector 4's affine fit by
-                // useForDriftFit(), so this cannot pull its global gain.
-                const bool relaxedDetector4ShapeAnchor =
-                    detector == kNonlinearDriftDetectorID &&
-                    peak.energyKeV >= 450.0 && peak.energyKeV <= 750.0 &&
-                    fitStatus == 0 && fitNdf >= 1 &&
-                    std::isfinite(fitCentroid) &&
-                    std::isfinite(fitCentroidError) &&
-                    fitCentroidError > 0.0 && fitCentroidError <= 0.5 &&
-                    std::abs(fitCentroid-predictedEnergy) <=
-                        peak.searchHalfWidthKeV &&
-                    fitSigma >= 0.4 && fitSigma <= 3.0 &&
-                    amplitudeSignificance >= 3.0;
-                fitAccepted = strictlyAccepted ||
-                    relaxedDetector4ShapeAnchor;
                 if (fitAccepted) {
                     acceptedPeakRecords.push_back({
                         group, detector, peak.energyKeV, fitCentroid});
@@ -1404,6 +1545,42 @@ int DriftCalibrationFitter::run(const std::string& inputFileName,
     }
     fillMissingPolynomialCorrections(detector16Corrections,
                                      chronologicalGroups);
+
+    std::vector<ShapePeakWindowDefinition> detector4WindowDefinitions;
+    for (const PeakDefinition& peak : peaks_) {
+        if (peak.energyKeV < 450.0 || peak.energyKeV > 750.0) continue;
+        detector4WindowDefinitions.push_back({
+            peak.energyKeV, std::max(10.0, peak.searchHalfWidthKeV),
+            std::max(4.0, peak.fitHalfWidthKeV)});
+    }
+    const std::vector<WindowedShapePeakRecord> detector4WindowedPeaks =
+        fitWindowedDetector4ShapePeaks(
+            inputFile, corrections, files, groupCount,
+            detector4WindowDefinitions);
+    const std::size_t acceptedDetector4WindowedPeaks =
+        static_cast<std::size_t>(std::count_if(
+            detector4WindowedPeaks.begin(), detector4WindowedPeaks.end(),
+            [](const WindowedShapePeakRecord& record) {
+                return record.accepted;
+            }));
+    std::cout << "Detector 4: accepted " << acceptedDetector4WindowedPeaks
+              << " / " << detector4WindowedPeaks.size()
+              << " sliding-window 536/628-keV shape-anchor fits.\n";
+    std::vector<AcceptedPeakRecord> detector4CalibrationRecords;
+    detector4CalibrationRecords.reserve(
+        acceptedPeakRecords.size()+detector4WindowedPeaks.size());
+    for (const AcceptedPeakRecord& record : acceptedPeakRecords) {
+        const bool replacedShapeAnchor =
+            record.detectorID == kNonlinearDriftDetectorID &&
+            record.referenceEnergy >= 450.0 &&
+            record.referenceEnergy <= 750.0;
+        if (!replacedShapeAnchor) detector4CalibrationRecords.push_back(record);
+    }
+    for (const WindowedShapePeakRecord& record : detector4WindowedPeaks) {
+        if (record.accepted) {
+            detector4CalibrationRecords.push_back(record.peak);
+        }
+    }
     std::vector<PiecewiseLinearCorrection> detector16Piecewise(groupCount);
     for (std::size_t group = 0; group < groupCount; ++group) {
         std::vector<std::pair<double, double>> anchors;
@@ -1444,7 +1621,7 @@ int DriftCalibrationFitter::run(const std::string& inputFileName,
         }
     }
     const std::vector<PiecewiseLinearCorrection> detector4Piecewise =
-        determineDetector4Corrections(acceptedPeakRecords, corrections,
+        determineDetector4Corrections(detector4CalibrationRecords, corrections,
                                       chronologicalGroups);
     const std::size_t validDetector4Corrections = static_cast<std::size_t>(
         std::count_if(detector4Piecewise.begin(), detector4Piecewise.end(),
@@ -1573,6 +1750,9 @@ int DriftCalibrationFitter::run(const std::string& inputFileName,
     TTree correctionTree("DriftCorrections",
                          "Measured and interpolated affine drift corrections");
     correctionTree.Branch("groupIndex", &correctionGroupIndex);
+    unsigned int correctionChronologicalPosition = 0;
+    correctionTree.Branch("chronologicalPosition",
+                          &correctionChronologicalPosition);
     correctionTree.Branch("detectorID", &correctionDetectorID);
     correctionTree.Branch("source", &correctionSource);
     correctionTree.Branch("valid", &correctionValid);
@@ -1610,6 +1790,8 @@ int DriftCalibrationFitter::run(const std::string& inputFileName,
         for (unsigned int group = 0; group < groupCount; ++group) {
             const GroupCorrection& correction = corrections[detector][group];
             correctionGroupIndex = group;
+            correctionChronologicalPosition = static_cast<unsigned int>(
+                chronologicalPosition[group]);
             correctionDetectorID = static_cast<UShort_t>(detector);
             correctionSource = static_cast<int>(correction.source);
             correctionValid = correction.valid;
@@ -1847,10 +2029,78 @@ int DriftCalibrationFitter::run(const std::string& inputFileName,
     }
 
     diagnostics.cd();
+    unsigned int windowGroupIndex = 0;
+    double windowReferenceEnergy = 0.0;
+    double windowCentroidEnergy = 0.0;
+    double windowCentroidError = 0.0;
+    double windowSigma = 0.0;
+    double windowSignificance = 0.0;
+    unsigned int windowNeighbourCount = 0;
+    bool windowAccepted = false;
+    TTree windowedShapeTree(
+        "Detector4WindowedPeakFits",
+        "Higher-statistics detector-4 shape-anchor fits");
+    windowedShapeTree.Branch("groupIndex", &windowGroupIndex);
+    windowedShapeTree.Branch("referenceEnergyKeV", &windowReferenceEnergy);
+    windowedShapeTree.Branch("centroidKeV", &windowCentroidEnergy);
+    windowedShapeTree.Branch("centroidErrorKeV", &windowCentroidError);
+    windowedShapeTree.Branch("sigmaKeV", &windowSigma);
+    windowedShapeTree.Branch("significance", &windowSignificance);
+    windowedShapeTree.Branch("neighbourCount", &windowNeighbourCount);
+    windowedShapeTree.Branch("accepted", &windowAccepted);
+    for (const WindowedShapePeakRecord& record : detector4WindowedPeaks) {
+        windowGroupIndex = record.peak.groupIndex;
+        windowReferenceEnergy = record.peak.referenceEnergy;
+        const GroupCorrection& affine =
+            corrections[kNonlinearDriftDetectorID][record.peak.groupIndex];
+        windowCentroidEnergy = record.accepted
+            ? affine.offset+affine.slope*record.peak.measuredEnergy : 0.0;
+        windowCentroidError = record.centroidErrorKeV;
+        windowSigma = record.sigmaKeV;
+        windowSignificance = record.significance;
+        windowNeighbourCount = record.neighbourCount;
+        windowAccepted = record.accepted;
+        windowedShapeTree.Fill();
+    }
+
+    unsigned int metadataGroupIndex = 0;
+    unsigned int metadataChronologicalPosition = 0;
+    std::string metadataSeries;
+    unsigned int metadataFirstRun = 0;
+    unsigned int metadataLastRun = 0;
+    TTree groupMetadataTree(
+        "DriftGroupMetadata", "Series and run range for each drift group");
+    groupMetadataTree.Branch("groupIndex", &metadataGroupIndex);
+    groupMetadataTree.Branch("chronologicalPosition",
+                             &metadataChronologicalPosition);
+    groupMetadataTree.Branch("series", &metadataSeries);
+    groupMetadataTree.Branch("firstRun", &metadataFirstRun);
+    groupMetadataTree.Branch("lastRun", &metadataLastRun);
+    for (std::size_t group = 0; group < groupCount; ++group) {
+        metadataGroupIndex = static_cast<unsigned int>(group);
+        metadataChronologicalPosition = static_cast<unsigned int>(
+            chronologicalPosition[group]);
+        metadataSeries.clear();
+        metadataFirstRun = std::numeric_limits<unsigned int>::max();
+        metadataLastRun = 0;
+        for (const FileRecord& file : files) {
+            if (file.groupIndex != group) continue;
+            metadataSeries = file.series;
+            metadataFirstRun = std::min(metadataFirstRun, file.run);
+            metadataLastRun = std::max(metadataLastRun, file.run);
+        }
+        if (metadataFirstRun == std::numeric_limits<unsigned int>::max()) {
+            metadataFirstRun = 0;
+        }
+        groupMetadataTree.Fill();
+    }
+
     peakTree.Write();
     alignmentTree.Write();
     correctionTree.Write();
     residualTree.Write();
+    windowedShapeTree.Write();
+    groupMetadataTree.Write();
     detector4PiecewiseTree.Write();
     detector16Tree.Write();
     TDirectory* graphDirectory = diagnostics.mkdir("CorrectionGraphs");
@@ -1872,8 +2122,10 @@ int DriftCalibrationFitter::run(const std::string& inputFileName,
         std::ostringstream description;
         description << std::setprecision(12)
             << "Detector 4 uses stable affine anchors outside 450--750 keV. "
-               "Accepted reference residuals from approximately 301 to 1779 "
-               "keV are blended with robust seven-group time trajectories. "
+               "The 536- and 628-keV shape anchors are fitted after affine "
+               "alignment in sliding windows of up to five groups from the "
+               "same series. Reference residuals from approximately 301 to "
+               "1779 keV are blended with robust seven-group trajectories. "
                "Missing and outlying centroids use the local trajectory. "
                "The resulting monotonic piecewise-linear mappings are stored "
                "in Detector4PiecewiseCorrections.";
