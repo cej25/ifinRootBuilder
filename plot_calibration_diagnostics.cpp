@@ -1,5 +1,6 @@
 #include "AnalysisConfig.h"
 
+#include <TAxis.h>
 #include <TCanvas.h>
 #include <TColor.h>
 #include <TFile.h>
