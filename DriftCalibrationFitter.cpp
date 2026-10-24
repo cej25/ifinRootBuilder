@@ -146,6 +146,7 @@ constexpr double kShapeLowerEnergyKeV = 301.570;
 constexpr double kShapeUpperEnergyKeV = 1000.0;
 constexpr double kFirstShapeAnchorKeV = 535.561;
 constexpr double kSecondShapeAnchorKeV = 627.540;
+constexpr double kUpperShapeAnchorKeV = 1014.520;
 
 bool useForDriftFit(unsigned int detectorID, double referenceEnergy)
 {
@@ -289,6 +290,116 @@ std::vector<double> robustTimeTrajectory(
         result[chronologicalGroups[position]] =
             std::isfinite(current) && std::abs(current-centre) <= limit
                 ? 0.65*current+0.35*localCentre : localCentre;
+    }
+    return result;
+}
+
+std::vector<double> broadSparseTrajectory(
+    const std::vector<double>& raw,
+    const std::vector<std::size_t>& chronologicalGroups,
+    const std::vector<std::string>& groupSeries)
+{
+    const double missing = std::numeric_limits<double>::quiet_NaN();
+    std::vector<double> result(raw.size(), missing);
+    std::map<std::string, std::vector<std::size_t>> seriesPositions;
+    for (std::size_t position = 0; position < chronologicalGroups.size();
+         ++position) {
+        const std::size_t group = chronologicalGroups[position];
+        seriesPositions[groupSeries[group]].push_back(position);
+    }
+
+    constexpr std::size_t kHalfWidthGroups = 30U;
+    for (const auto& seriesEntry : seriesPositions) {
+        std::vector<std::size_t> knots;
+        for (const std::size_t position : seriesEntry.second) {
+            if (std::isfinite(raw[chronologicalGroups[position]])) {
+                knots.push_back(position);
+            }
+        }
+        if (knots.empty()) continue;
+
+        std::vector<double> smoothedKnots;
+        smoothedKnots.reserve(knots.size());
+        for (const std::size_t knot : knots) {
+            std::vector<double> window;
+            for (const std::size_t candidate : knots) {
+                const std::size_t distance = candidate > knot
+                    ? candidate-knot : knot-candidate;
+                if (distance <= kHalfWidthGroups) {
+                    window.push_back(raw[chronologicalGroups[candidate]]);
+                }
+            }
+            const double centre = median(window);
+            std::vector<double> deviations;
+            deviations.reserve(window.size());
+            for (const double value : window) {
+                deviations.push_back(std::abs(value-centre));
+            }
+            const double limit = std::max(
+                0.75, 3.0*1.4826*median(deviations));
+            std::vector<double> retained;
+            for (const double value : window) {
+                if (std::abs(value-centre) <= limit) {
+                    retained.push_back(value);
+                }
+            }
+            smoothedKnots.push_back(
+                retained.empty() ? centre : median(retained));
+        }
+
+        for (const std::size_t position : seriesEntry.second) {
+            const auto after = std::lower_bound(
+                knots.begin(), knots.end(), position);
+            double value = missing;
+            if (after == knots.begin()) {
+                value = smoothedKnots.front();
+            } else if (after == knots.end()) {
+                value = smoothedKnots.back();
+            } else {
+                const std::size_t highIndex = static_cast<std::size_t>(
+                    std::distance(knots.begin(), after));
+                const std::size_t lowIndex = highIndex-1U;
+                const double fraction = static_cast<double>(
+                    position-knots[lowIndex])/
+                    static_cast<double>(knots[highIndex]-knots[lowIndex]);
+                value = smoothedKnots[lowIndex]+fraction*
+                    (smoothedKnots[highIndex]-smoothedKnots[lowIndex]);
+            }
+            result[chronologicalGroups[position]] = value;
+        }
+    }
+
+    // A later series may contain no measurable 628-keV line.  In that case,
+    // carry the nearest well-determined curvature rather than inventing a new
+    // group-by-group shape from noise.
+    std::vector<std::size_t> validPositions;
+    for (std::size_t position = 0; position < chronologicalGroups.size();
+         ++position) {
+        if (std::isfinite(result[chronologicalGroups[position]])) {
+            validPositions.push_back(position);
+        }
+    }
+    if (validPositions.empty()) return result;
+    for (std::size_t position = 0; position < chronologicalGroups.size();
+         ++position) {
+        const std::size_t group = chronologicalGroups[position];
+        if (std::isfinite(result[group])) continue;
+        const auto after = std::lower_bound(
+            validPositions.begin(), validPositions.end(), position);
+        if (after == validPositions.begin()) {
+            result[group] = result[chronologicalGroups[*after]];
+        } else if (after == validPositions.end()) {
+            result[group] = result[
+                chronologicalGroups[validPositions.back()]];
+        } else {
+            const std::size_t highPosition = *after;
+            const std::size_t lowPosition = *(after-1);
+            const double fraction = static_cast<double>(position-lowPosition)/
+                static_cast<double>(highPosition-lowPosition);
+            const double low = result[chronologicalGroups[lowPosition]];
+            const double high = result[chronologicalGroups[highPosition]];
+            result[group] = low+fraction*(high-low);
+        }
     }
     return result;
 }
@@ -442,7 +553,8 @@ std::vector<PiecewiseLinearCorrection> determineDetector4Corrections(
     const std::vector<AcceptedPeakRecord>& records,
     const std::array<std::vector<GroupCorrection>,
                      config::kGermaniumIdBins>& corrections,
-    const std::vector<std::size_t>& chronologicalGroups)
+    const std::vector<std::size_t>& chronologicalGroups,
+    const std::vector<std::string>& groupSeries)
 {
     const std::size_t groupCount = chronologicalGroups.size();
     const double missing = std::numeric_limits<double>::quiet_NaN();
@@ -474,6 +586,48 @@ std::vector<PiecewiseLinearCorrection> determineDetector4Corrections(
         if (measuredGroups >= 20U) {
             trajectories.emplace(
                 entry.first, robustTimeTrajectory(raw, chronologicalGroups));
+        }
+    }
+
+    // The 628-keV peak is much weaker than the 536-keV peak.  Its sparse
+    // centroids constrain only the slowly varying curvature relative to the
+    // reliable 536--1015-keV trajectory; they must not move individual drift
+    // groups directly, which would broaden a summed spectrum.
+    const auto lower = trajectories.find(kFirstShapeAnchorKeV);
+    const auto upper = trajectories.find(kUpperShapeAnchorKeV);
+    const auto secondSamples = samples.find(kSecondShapeAnchorKeV);
+    if (lower != trajectories.end() && upper != trajectories.end() &&
+        secondSamples != samples.end()) {
+        const double fraction =
+            (kSecondShapeAnchorKeV-kFirstShapeAnchorKeV)/
+            (kUpperShapeAnchorKeV-kFirstShapeAnchorKeV);
+        std::vector<double> rawCurvature(groupCount, missing);
+        std::size_t measuredCurvatures = 0;
+        for (std::size_t group = 0; group < groupCount; ++group) {
+            if (secondSamples->second[group].empty()) continue;
+            const double baseline = lower->second[group]+fraction*
+                (upper->second[group]-lower->second[group]);
+            if (!std::isfinite(baseline)) continue;
+            rawCurvature[group] =
+                median(secondSamples->second[group])-baseline;
+            if (std::isfinite(rawCurvature[group])) ++measuredCurvatures;
+        }
+        if (measuredCurvatures >= 5U) {
+            const std::vector<double> curvature = broadSparseTrajectory(
+                rawCurvature, chronologicalGroups, groupSeries);
+            std::vector<double> stabilized(groupCount, missing);
+            for (std::size_t group = 0; group < groupCount; ++group) {
+                const double baseline = lower->second[group]+fraction*
+                    (upper->second[group]-lower->second[group]);
+                if (std::isfinite(baseline) &&
+                    std::isfinite(curvature[group])) {
+                    stabilized[group] = baseline+curvature[group];
+                }
+            }
+            trajectories[kSecondShapeAnchorKeV] = std::move(stabilized);
+            std::cout << "Detector 4: stabilized the 628-keV curvature from "
+                      << measuredCurvatures
+                      << " measured groups using broad robust trajectories.\n";
         }
     }
 
@@ -1275,6 +1429,10 @@ int DriftCalibrationFitter::run(const std::string& inputFileName,
         return 5;
     }
     const std::size_t groupCount = static_cast<std::size_t>(maximumGroup)+1U;
+    std::vector<std::string> groupSeries(groupCount);
+    for (const FileRecord& file : files) {
+        groupSeries[file.groupIndex] = file.series;
+    }
     const std::vector<std::size_t> chronologicalGroups =
         chronologicalGroupOrder(files, groupCount, seriesOrder_);
     if (!seriesOrder_.empty()) {
@@ -1622,7 +1780,7 @@ int DriftCalibrationFitter::run(const std::string& inputFileName,
     }
     const std::vector<PiecewiseLinearCorrection> detector4Piecewise =
         determineDetector4Corrections(detector4CalibrationRecords, corrections,
-                                      chronologicalGroups);
+                                      chronologicalGroups, groupSeries);
     const std::size_t validDetector4Corrections = static_cast<std::size_t>(
         std::count_if(detector4Piecewise.begin(), detector4Piecewise.end(),
             [](const PiecewiseLinearCorrection& correction) {
@@ -1821,6 +1979,7 @@ int DriftCalibrationFitter::run(const std::string& inputFileName,
     unsigned int detector4AnchorCount = 0;
     double detector4MinimumAnchorEnergy = 0.0;
     double detector4MaximumAnchorEnergy = 0.0;
+    double detector4Curvature628 = 0.0;
     TTree detector4PiecewiseTree(
         "Detector4PiecewiseCorrections",
         "Robust full-range detector-4 piecewise corrections");
@@ -1831,6 +1990,8 @@ int DriftCalibrationFitter::run(const std::string& inputFileName,
                                   &detector4MinimumAnchorEnergy);
     detector4PiecewiseTree.Branch("maximumAnchorEnergyKeV",
                                   &detector4MaximumAnchorEnergy);
+    detector4PiecewiseTree.Branch("curvature628KeV",
+                                  &detector4Curvature628);
 
     int detector16Source = 0;
     bool detector16Valid = false;
@@ -1867,6 +2028,29 @@ int DriftCalibrationFitter::run(const std::string& inputFileName,
             ? detector4.anchors.front().second : 0.0;
         detector4MaximumAnchorEnergy = detector4.valid
             ? detector4.anchors.back().second : 0.0;
+        detector4Curvature628 = 0.0;
+        double residual536 = std::numeric_limits<double>::quiet_NaN();
+        double residual628 = std::numeric_limits<double>::quiet_NaN();
+        double residual1015 = std::numeric_limits<double>::quiet_NaN();
+        for (const auto& anchor : detector4.anchors) {
+            const double residual = anchor.first-anchor.second;
+            if (std::abs(anchor.second-kFirstShapeAnchorKeV) < 0.01) {
+                residual536 = residual;
+            } else if (std::abs(anchor.second-kSecondShapeAnchorKeV) < 0.01) {
+                residual628 = residual;
+            } else if (std::abs(anchor.second-kUpperShapeAnchorKeV) < 0.01) {
+                residual1015 = residual;
+            }
+        }
+        if (std::isfinite(residual536) && std::isfinite(residual628) &&
+            std::isfinite(residual1015)) {
+            const double fraction =
+                (kSecondShapeAnchorKeV-kFirstShapeAnchorKeV)/
+                (kUpperShapeAnchorKeV-kFirstShapeAnchorKeV);
+            const double baseline = residual536+fraction*
+                (residual1015-residual536);
+            detector4Curvature628 = residual628-baseline;
+        }
         detector4PiecewiseTree.Fill();
 
         const PolynomialCorrection& polynomial = detector16Corrections[group];
@@ -2124,9 +2308,12 @@ int DriftCalibrationFitter::run(const std::string& inputFileName,
             << "Detector 4 uses stable affine anchors outside 450--750 keV. "
                "The 536- and 628-keV shape anchors are fitted after affine "
                "alignment in sliding windows of up to five groups from the "
-               "same series. Reference residuals from approximately 301 to "
-               "1779 keV are blended with robust seven-group trajectories. "
-               "Missing and outlying centroids use the local trajectory. "
+               "same series. The strong 536-keV anchor follows the ordinary "
+               "local trajectory. Sparse 628-keV measurements constrain only "
+               "a broad robust curvature relative to the 536--1015-keV "
+               "trajectory, preventing individual weak fits from broadening "
+               "summed spectra. Reference residuals from approximately 301 "
+               "to 1779 keV define the remaining local trajectories. "
                "The resulting monotonic piecewise-linear mappings are stored "
                "in Detector4PiecewiseCorrections.";
         TNamed detector4Metadata(

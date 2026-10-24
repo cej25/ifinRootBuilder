@@ -242,16 +242,19 @@ three spanning at least 700 keV). Residuals at the 301-, 536-, 628-, 1015-,
 correction for each group. To obtain enough statistics without broadening a
 peak through unresolved gain drift, the 536- and 628-keV spectra from up to
 five neighbouring groups in the same target-distance series are first aligned
-with their individual affine corrections and then summed. The fitted shape
-anchors are assigned to the centre group and blended with a robust seven-group
-local trajectory; they never enter the affine gain fit. Missing shape anchors
-are interpolated chronologically between the nearest reliable measurements,
-while isolated false fits use the robust local trajectory. Segment slopes are
-checked for monotonicity and reasonable scale. This follows detector 4's
+with their individual affine corrections and then summed. The strong 536-keV
+anchor retains a local time trajectory. Because the 628-keV line is much
+weaker, its accepted measurements constrain only a broad, robust curvature
+relative to the 536--1015-keV interpolation; an individual weak fit can no
+longer move one ten-file group directly and broaden the accumulated spectrum.
+Series without a measurable 628-keV line inherit the nearest supported
+curvature. These shape anchors never enter the affine gain fit. Segment slopes
+are checked for monotonicity and reasonable scale. This follows detector 4's
 changing response over the full analysis range without allowing false
 centroids such as the group-33 1015-keV fit to enter the calibration. The
 individual window fits and their neighbour counts are stored in
-`Detector4WindowedPeakFits`.
+`Detector4WindowedPeakFits`; the applied 628-keV curvature is stored in
+`Detector4PiecewiseCorrections`.
 
 Detector 16 is also checked group by group for nonlinear drift. Mild curvature
 may use a guarded quadratic correction. For the sharp response change seen in
