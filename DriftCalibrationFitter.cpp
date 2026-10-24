@@ -220,7 +220,13 @@ std::vector<double> robustTimeTrajectory(
     std::vector<double> all;
     for (double value : raw) if (std::isfinite(value)) all.push_back(value);
     if (all.empty()) return result;
-    const double fallback = median(all);
+    std::vector<std::size_t> validPositions;
+    for (std::size_t position = 0; position < chronologicalGroups.size();
+         ++position) {
+        if (std::isfinite(raw[chronologicalGroups[position]])) {
+            validPositions.push_back(position);
+        }
+    }
     for (std::size_t position = 0; position < chronologicalGroups.size();
          ++position) {
         std::vector<double> window;
@@ -232,7 +238,25 @@ std::vector<double> robustTimeTrajectory(
             if (std::isfinite(value)) window.push_back(value);
         }
         if (window.empty()) {
-            result[chronologicalGroups[position]] = fallback;
+            const auto after = std::lower_bound(
+                validPositions.begin(), validPositions.end(), position);
+            if (after == validPositions.begin()) {
+                result[chronologicalGroups[position]] =
+                    raw[chronologicalGroups[*after]];
+            } else if (after == validPositions.end()) {
+                result[chronologicalGroups[position]] =
+                    raw[chronologicalGroups[validPositions.back()]];
+            } else {
+                const std::size_t highPosition = *after;
+                const std::size_t lowPosition = *(after-1);
+                const double fraction =
+                    static_cast<double>(position-lowPosition)/
+                    static_cast<double>(highPosition-lowPosition);
+                const double low = raw[chronologicalGroups[lowPosition]];
+                const double high = raw[chronologicalGroups[highPosition]];
+                result[chronologicalGroups[position]] =
+                    low+fraction*(high-low);
+            }
             continue;
         }
         const double centre = median(window);
@@ -1264,13 +1288,33 @@ int DriftCalibrationFitter::run(const std::string& inputFileName,
                 fitNdf = function.GetNDF();
                 const double amplitudeSignificance = fitAmplitudeError > 0.0
                     ? fitAmplitude/fitAmplitudeError : 0.0;
-                fitAccepted = fitStatus == 0 && std::isfinite(fitCentroid) &&
+                const bool strictlyAccepted = fitStatus == 0 &&
+                    std::isfinite(fitCentroid) &&
                     std::isfinite(fitCentroidError) &&
                     fitCentroidError > 0.0 && fitCentroidError <= 1.0 &&
                     std::abs(fitCentroid-predictedEnergy) <=
                         peak.searchHalfWidthKeV &&
                     fitSigma >= 0.2 && fitSigma <= 4.0 &&
                     amplitudeSignificance >= 5.0;
+                // Detector 4's 536- and 628-keV peaks can be broadened and
+                // displaced by its nonlinear response before the shape
+                // correction is applied.  Retain moderate-significance,
+                // well-constrained fits for the shape trajectory only.  The
+                // two energies are excluded from detector 4's affine fit by
+                // useForDriftFit(), so this cannot pull its global gain.
+                const bool relaxedDetector4ShapeAnchor =
+                    detector == kNonlinearDriftDetectorID &&
+                    peak.energyKeV >= 450.0 && peak.energyKeV <= 750.0 &&
+                    fitStatus == 0 && fitNdf >= 1 &&
+                    std::isfinite(fitCentroid) &&
+                    std::isfinite(fitCentroidError) &&
+                    fitCentroidError > 0.0 && fitCentroidError <= 0.5 &&
+                    std::abs(fitCentroid-predictedEnergy) <=
+                        peak.searchHalfWidthKeV &&
+                    fitSigma >= 0.4 && fitSigma <= 3.0 &&
+                    amplitudeSignificance >= 3.0;
+                fitAccepted = strictlyAccepted ||
+                    relaxedDetector4ShapeAnchor;
                 if (fitAccepted) {
                     acceptedPeakRecords.push_back({
                         group, detector, peak.energyKeV, fitCentroid});

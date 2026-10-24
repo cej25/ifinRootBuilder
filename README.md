@@ -239,11 +239,15 @@ with the stable 301-, 1015-, 1461-, and 1779-keV in-beam anchors (at least
 three spanning at least 700 keV). Residuals at the 301-, 536-, 628-, 1015-,
 1461- and 1779-keV references then define a full-range piecewise-linear
 correction for each group. Each measured residual is blended with a robust
-seven-group local trajectory, while isolated false fits and missing anchors
-use that trajectory directly. Segment slopes are checked for monotonicity and
-reasonable scale. This follows detector 4's changing response over the full
-analysis range without allowing false centroids such as the group-33
-1015-keV fit to enter the calibration.
+seven-group local trajectory. The 536- and 628-keV shape anchors permit a
+guarded lower-significance fit when its centroid, width and uncertainty remain
+well constrained; these points never enter the affine gain fit. Missing shape
+anchors are interpolated chronologically between the nearest reliable
+measurements instead of using an experiment-wide average, while isolated
+false fits use the robust local trajectory. Segment slopes are checked for
+monotonicity and reasonable scale. This follows detector 4's changing response
+over the full analysis range without allowing false centroids such as the
+group-33 1015-keV fit to enter the calibration.
 
 Detector 16 is also checked group by group for nonlinear drift. Mild curvature
 may use a guarded quadratic correction. For the sharp response change seen in
