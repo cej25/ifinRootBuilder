@@ -50,6 +50,15 @@ inline constexpr double kSiliconTimeMaxNs    = 1050.0;
 inline constexpr double kSiliconEnergyMin    = 1000.0;
 inline constexpr double kSiliconEnergyMax    = 4000.0;
 
+// Event-multiplicity selection used only for the five silicon-conditioned,
+// BGO-vetoed germanium ring spectra.  Ge multiplicity counts timing-valid Ge
+// hits before the per-detector BGO veto; BGO multiplicity counts all BGO hits
+// stored in the event.  FoldValid is deliberately not required.
+inline constexpr unsigned int kRingGeMultiplicityMin = 1;
+inline constexpr unsigned int kRingGeMultiplicityMax = 2;
+inline constexpr unsigned int kRingBgoMultiplicityMin = 1;
+inline constexpr unsigned int kRingBgoMultiplicityMax = 2;
+
 inline constexpr int    kGermaniumSpectrumBins = 4096;
 inline constexpr double kGermaniumSpectrumMin  = 0.0;
 inline constexpr double kGermaniumSpectrumMax  = 4096.0;

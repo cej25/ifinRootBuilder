@@ -490,7 +490,8 @@ void RawAnalysis::processReader(TTreeReader& reader,
                 bgoVetoedGammaEnergies);
             germaniumConditionHistograms_.fillBgoVetoedSiliconEvent(
                 bgoVetoedGammaEnergies, bgoVetoedGammaIDs,
-                germaniumMultiplicity, acceptedSiliconEnergies);
+                germaniumMultiplicity, bgoMultiplicity,
+                acceptedSiliconEnergies);
             angularCoincidences_.fillEvent(
                 bgoVetoedGammaEnergies, bgoVetoedGammaIDs);
         }

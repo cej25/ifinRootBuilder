@@ -304,7 +304,7 @@ void AnalysisTreeAnalysis::processReader(
                 vetoedGammaEnergies);
             germaniumConditionHistograms_.fillBgoVetoedSiliconEvent(
                 vetoedGammaEnergies, vetoedGammaIDs, *geMultiplicity,
-                acceptedSiliconEnergies);
+                *bgoMultiplicity, acceptedSiliconEnergies);
             angularCoincidences_.fillEvent(
                 vetoedGammaEnergies, vetoedGammaIDs);
         }

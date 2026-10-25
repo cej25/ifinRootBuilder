@@ -90,14 +90,14 @@ GermaniumConditionHistograms::GermaniumConditionHistograms()
          index < config::kGermaniumAngleGroups.size(); ++index) {
         const auto& group = config::kGermaniumAngleGroups[index];
         const std::string name =
-            "h1_Ge_Si_E_ID" +
+            "h1_Ge_Si_GM1-2_BM1-2_E_ID" +
             (group.firstID < 10 ? std::string("0") : std::string()) +
             std::to_string(group.firstID) + "-" +
             (group.lastID < 10 ? std::string("0") : std::string()) +
             std::to_string(group.lastID);
         const std::string title =
             std::string(group.title) +
-            " germanium energy after BGO veto with silicon condition;Energy [raw units];Counts";
+            " germanium energy after BGO veto with silicon condition, Ge multiplicity 1-2 and BGO multiplicity 1-2;Energy [raw units];Counts";
         siliconBgoVetoedByRing_[index] =
             makeSpectrum(name.c_str(), title.c_str());
     }
@@ -200,6 +200,7 @@ void GermaniumConditionHistograms::fillBgoVetoedSiliconEvent(
     const std::vector<double>& germaniumEnergies,
     const std::vector<unsigned short>& germaniumIDs,
     unsigned int germaniumMultiplicityBeforeBgoVeto,
+    unsigned int bgoMultiplicity,
     const std::vector<double>& acceptedSiliconEnergies)
 {
     if (germaniumEnergies.size() != germaniumIDs.size()) {
@@ -208,16 +209,26 @@ void GermaniumConditionHistograms::fillBgoVetoedSiliconEvent(
     }
     if (acceptedSiliconEnergies.empty()) return;
 
+    const bool ringMultiplicityAccepted =
+        germaniumMultiplicityBeforeBgoVeto >=
+            config::kRingGeMultiplicityMin &&
+        germaniumMultiplicityBeforeBgoVeto <=
+            config::kRingGeMultiplicityMax &&
+        bgoMultiplicity >= config::kRingBgoMultiplicityMin &&
+        bgoMultiplicity <= config::kRingBgoMultiplicityMax;
+
     for (std::size_t hit = 0; hit < germaniumEnergies.size(); ++hit) {
         const double germaniumEnergy = germaniumEnergies[hit];
         const unsigned short germaniumID = germaniumIDs[hit];
-        for (std::size_t ring = 0;
-             ring < config::kGermaniumAngleGroups.size(); ++ring) {
-            const auto& group = config::kGermaniumAngleGroups[ring];
-            if (germaniumID >= group.firstID &&
-                germaniumID <= group.lastID) {
-                siliconBgoVetoedByRing_[ring]->Fill(germaniumEnergy);
-                break;
+        if (ringMultiplicityAccepted) {
+            for (std::size_t ring = 0;
+                 ring < config::kGermaniumAngleGroups.size(); ++ring) {
+                const auto& group = config::kGermaniumAngleGroups[ring];
+                if (germaniumID >= group.firstID &&
+                    germaniumID <= group.lastID) {
+                    siliconBgoVetoedByRing_[ring]->Fill(germaniumEnergy);
+                    break;
+                }
             }
         }
         if (germaniumMultiplicityBeforeBgoVeto == 1U) {

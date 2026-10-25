@@ -494,11 +494,11 @@ Additional silicon-conditioned products are written during histogramming:
 
 ```text
 Germanium/Energy/h1_Ge_Si_M1_E
-Germanium/Energy/Rings/h1_Ge_Si_E_ID00-04
-Germanium/Energy/Rings/h1_Ge_Si_E_ID05-09
-Germanium/Energy/Rings/h1_Ge_Si_E_ID10-14
-Germanium/Energy/Rings/h1_Ge_Si_E_ID15-19
-Germanium/Energy/Rings/h1_Ge_Si_E_ID20-24
+Germanium/Energy/Rings/h1_Ge_Si_GM1-2_BM1-2_E_ID00-04
+Germanium/Energy/Rings/h1_Ge_Si_GM1-2_BM1-2_E_ID05-09
+Germanium/Energy/Rings/h1_Ge_Si_GM1-2_BM1-2_E_ID10-14
+Germanium/Energy/Rings/h1_Ge_Si_GM1-2_BM1-2_E_ID15-19
+Germanium/Energy/Rings/h1_Ge_Si_GM1-2_BM1-2_E_ID20-24
 Coincidences/ParticleGamma/h2_Ge_Si_EvE
 ```
 
@@ -508,8 +508,12 @@ the two-dimensional particle-gamma matrix, every accepted silicon hit is
 paired with every accepted germanium hit in the event: two silicon hits and
 four germanium hits therefore contribute eight entries. The multiplicity-one
 spectrum requires the pre-veto valid Ge multiplicity to be exactly one; its
-single Ge hit must then survive the BGO veto. The five ring spectra correspond
-to detector IDs 0--4, 5--9, 10--14, 15--19 and 20--24 respectively.
+single Ge hit must then survive the BGO veto. The five ring spectra require
+both the pre-veto valid Ge multiplicity and the event BGO multiplicity to be
+between one and two inclusive. They do not require `FoldValid`. The accepted
+Ge hit must still survive its per-detector BGO veto. The ring spectra correspond
+to detector IDs 0--4, 5--9, 10--14, 15--19 and 20--24 respectively. The four
+multiplicity limits are editable in `AnalysisConfig.h`.
 
 Before event processing, the program reads the first and last `absoluteTime`
 from each input file. It concatenates the elapsed time within each file to form

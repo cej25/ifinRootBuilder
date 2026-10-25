@@ -32,6 +32,7 @@ public:
         const std::vector<double>& germaniumEnergies,
         const std::vector<unsigned short>& germaniumIDs,
         unsigned int germaniumMultiplicityBeforeBgoVeto,
+        unsigned int bgoMultiplicity,
         const std::vector<double>& acceptedSiliconEnergies);
     void fillEvent(unsigned int germaniumMultiplicityAfterBgoVeto,
                    bool siliconCoincident, bool foldValid);
